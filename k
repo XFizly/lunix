@@ -1,4 +1,10 @@
-#!/usr/bin/env lua5.4
+#!/usr/bin/env sh
+_=[[
+if command -v lua >/dev/null 2>&1; then
+  exec lua "$0" "$@"
+fi
+exec lua5.4 "$0" "$@"
+]]
 math.randomseed(os.time())
 
 local json = {}
