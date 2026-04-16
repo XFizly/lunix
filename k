@@ -147,7 +147,9 @@ local LIC_PATH = LROOT .. "/license_key.json"
 local DL_ROOT = SDIR .. "/downloads"
 local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 local NULL_DEVICE = IS_WINDOWS and "NUL" or "/dev/null"
-local TEMP_ROOT = os.getenv("TEMP") or os.getenv("TMP") or (IS_WINDOWS and "." or "/tmp")
+local TEMP_ROOT = IS_WINDOWS
+    and (os.getenv("TEMP") or os.getenv("TMP") or ".")
+    or (os.getenv("TMPDIR") or (HOME .. "/.lunex-tmp"))
 local GF_CODE = "ePdGcF"
 local GF_PASS = "A7K9-X2QM-4RTP-Z8LJ"
 local GF_PAGE = "https://gofile.io/d/" .. GF_CODE
@@ -481,7 +483,15 @@ local function http_req(method, url, hdrs, body, use_tool_api)
     local body_tmp = body and temp_path("lnx_b") or nil
     if body_tmp then
         local bf = io.open(body_tmp, "wb")
-        if not bf then return nil, "" end
+        if not bf then
+            push_debug("HTTP", "temp body file open failed at " .. body_tmp)
+            return nil, "", {
+                stderr = "temp body file open failed",
+                close_ok = false,
+                close_reason = "temp_open_failed",
+                close_code = 0,
+            }
+        end
         bf:write(body)
         bf:close()
     end
@@ -970,6 +980,7 @@ end
 
 local function main()
     mkdirp(LROOT)
+    mkdirp(TEMP_ROOT)
     local hwid, lbl = device_id()
     push_debug("BOOT", "tool base " .. TOOL_API.base)
     push_debug("BOOT", "device " .. short(lbl, 48) .. " hwid " .. hwid:sub(1, 12))
