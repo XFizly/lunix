@@ -139,6 +139,9 @@ local SDIR = (arg[0] or ""):match("^(.+)/[^/]*$") or "."
 local LROOT = HOME .. "/lunex"
 local LIC_PATH = LROOT .. "/license_key.json"
 local DL_ROOT = SDIR .. "/downloads"
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+local NULL_DEVICE = IS_WINDOWS and "NUL" or "/dev/null"
+local TEMP_ROOT = os.getenv("TEMP") or os.getenv("TMP") or (IS_WINDOWS and "." or "/tmp")
 local GF_CODE = "ePdGcF"
 local GF_PASS = "A7K9-X2QM-4RTP-Z8LJ"
 local GF_PAGE = "https://gofile.io/d/" .. GF_CODE
@@ -205,7 +208,7 @@ local function col(s, ...) return table.concat({ ... }) .. s .. P.reset end
 local function clear() io.write("\027[2J\027[H"); io.flush() end
 
 local function shl(cmd)
-    local f = io.popen(cmd .. " 2>/dev/null")
+    local f = io.popen(cmd .. " 2>" .. NULL_DEVICE)
     if not f then return "" end
     local r = (f:read("*l") or ""):match("^%s*(.-)%s*$")
     f:close()
@@ -238,10 +241,28 @@ local function hsize(n)
     return ("%.1f %s"):format(v, u[i])
 end
 
-local function sleep(s) os.execute("sleep " .. s) end
-local function esc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+local function sleep(s)
+    if IS_WINDOWS then
+        os.execute('powershell -NoProfile -Command "Start-Sleep -Milliseconds ' .. math.max(1, math.floor(s * 1000)) .. '" >' .. NULL_DEVICE .. " 2>&1")
+        return
+    end
+    os.execute("sleep " .. s)
+end
+
+local function esc(s)
+    if IS_WINDOWS then
+        return '"' .. tostring(s):gsub('"', '""') .. '"'
+    end
+    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
 local function safename(s) return (s:gsub('[\\/:*?"<>|]', "_")) end
-local function mkdirp(p) os.execute("mkdir -p " .. esc(p) .. " 2>/dev/null") end
+local function mkdirp(p)
+    if IS_WINDOWS then
+        os.execute('if not exist ' .. esc(p) .. " mkdir " .. esc(p) .. " >" .. NULL_DEVICE .. " 2>&1")
+        return
+    end
+    os.execute("mkdir -p " .. esc(p) .. " 2>" .. NULL_DEVICE)
+end
 
 local function fexists(p)
     local f = io.open(p, "r")
@@ -250,6 +271,11 @@ local function fexists(p)
 end
 
 local function banner() print(col(BANNER, P.accent, P.bold)) end
+
+local function temp_path(prefix)
+    local sep = IS_WINDOWS and "\\" or "/"
+    return TEMP_ROOT .. sep .. prefix .. "_" .. math.random(999999) .. ".tmp"
+end
 
 local function box(title, lines)
     local w = tw() - 4
@@ -297,12 +323,17 @@ local function mdelay(pos, tot, seed, steps, delay)
 end
 
 local function sha256(s)
-    local tmp = "/tmp/lnx_" .. math.random(999999) .. ".tmp"
+    local tmp = temp_path("lnx")
     local f = io.open(tmp, "wb")
     if not f then return "" end
     f:write(s)
     f:close()
-    local h = shl("openssl dgst -sha256 < " .. esc(tmp) .. " | awk '{print $NF}'")
+    local h
+    if IS_WINDOWS then
+        h = shl("powershell -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 '" .. tmp:gsub("'", "''") .. "').Hash\"")
+    else
+        h = shl("openssl dgst -sha256 < " .. esc(tmp) .. " | awk '{print $NF}'")
+    end
     os.remove(tmp)
     return h:lower()
 end
@@ -383,13 +414,20 @@ local function save_lic(key, hwid, lbl)
 end
 
 local function http_req(method, url, hdrs, body, use_tool_api)
-    local tmp = "/tmp/lnx_r_" .. math.random(99999) .. ".tmp"
+    local tmp = temp_path("lnx_r")
+    local body_tmp = body and temp_path("lnx_b") or nil
+    if body_tmp then
+        local bf = io.open(body_tmp, "wb")
+        if not bf then return nil, "" end
+        bf:write(body)
+        bf:close()
+    end
     local parts = {
-        "curl",
+        IS_WINDOWS and "curl.exe" or "curl",
         "-k",
         "-s",
         "-o", esc(tmp),
-        "-w", "'%{http_code}'",
+        "-w", esc("%{http_code}"),
         "-X", method,
     }
     if use_tool_api then
@@ -403,11 +441,11 @@ local function http_req(method, url, hdrs, body, use_tool_api)
         parts[#parts + 1] = esc(h)
     end
     if body then
-        parts[#parts + 1] = "--data-raw"
-        parts[#parts + 1] = esc(body)
+        parts[#parts + 1] = "--data-binary"
+        parts[#parts + 1] = esc("@" .. body_tmp)
     end
     parts[#parts + 1] = esc(url)
-    local f = io.popen(table.concat(parts, " ") .. " 2>/dev/null")
+    local f = io.popen(table.concat(parts, " ") .. " 2>" .. NULL_DEVICE)
     local sc = tonumber((f and f:read("*a") or "0"):match("%d+")) or 0
     if f then f:close() end
     local raw = ""
@@ -417,6 +455,7 @@ local function http_req(method, url, hdrs, body, use_tool_api)
         rf:close()
     end
     os.remove(tmp)
+    if body_tmp then os.remove(body_tmp) end
     return sc == 0 and nil or sc, raw
 end
 
@@ -432,6 +471,8 @@ local function chk_license(key)
     local sc, d = api_post("/api/termux/license-status", { licenseKey = key })
     if not sc then return "server", d.message or "Server unavailable." end
     if sc == 200 then return "valid", d.message or "Valid." end
+    if (d.code or "") == "UNAUTHORIZED" then return "server", d.message or "Unauthorized." end
+    if sc >= 500 then return "server", d.message or "Server unavailable." end
     return "invalid", d.message or "Invalid."
 end
 
@@ -535,7 +576,7 @@ local function dl_apk(sess, apk)
         .. " -H " .. esc("User-Agent: " .. GF_UA)
         .. " -H " .. esc("Cookie: accountToken=" .. sess.token)
         .. " -H " .. esc("Referer: " .. GF_PAGE)
-        .. " " .. esc(apk.link) .. " 2>/dev/null"
+        .. " " .. esc(apk.link) .. " 2>" .. NULL_DEVICE
     if not os.execute(cmd) then error("curl download failed") end
     local f = io.open(dest, "rb")
     if not f then error("downloaded file missing") end
@@ -601,6 +642,17 @@ end
 local READ_KEY_CMD = [[bash -c 'IFS= read -r -s -n1 k </dev/tty 2>/dev/null; IFS= read -r -s -n2 -t0.1 s </dev/tty 2>/dev/null; printf "%s" "$k$s"' 2>/dev/null | od -An -tx1 | tr -d ' \n\r']]
 
 local function read_key()
+    if IS_WINDOWS then
+        io.write(col("  Command [w/s/space/a/enter/q]: ", P.muted))
+        io.flush()
+        local value = (io.read("*l") or ""):lower()
+        if value == "w" then return "UP" end
+        if value == "s" then return "DOWN" end
+        if value == "space" then return "SPACE" end
+        if value == "a" then return "A" end
+        if value == "q" then return "Q" end
+        return "ENTER"
+    end
     local f = io.popen(READ_KEY_CMD)
     if not f then return "" end
     local h = (f:read("*a") or ""):lower():gsub("[%s\n\r]", "")
