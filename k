@@ -149,7 +149,7 @@ local GF_API = "https://api.gofile.io"
 local GF_UA = "Mozilla/5.0 (Linux; Android 14; Termux)"
 local GF_LANG = "en-US"
 local GF_SFXWT = "5d4f7g8sd45fsd"
-local LunexToolAPI = "0324241241241:https://coast-where-risks-pupils.trycloudflare.com:lunextool:R9p4K2m8Qx6Z1v3N"
+local LunexToolAPI = "0324241241241:https://lunex-termux-api.vercel.app:lunextool:R9p4K2m8Qx6Z1v3N"
 
 local ACTS = {
     "Refreshing secure channels...",
