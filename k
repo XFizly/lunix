@@ -209,6 +209,8 @@ local function parse_tool_api(spec)
 end
 
 local TOOL_API = parse_tool_api(LunexToolAPI)
+local DEBUG_LOGS = {}
+local MAX_DEBUG_LOGS = 48
 
 local function col(s, ...) return table.concat({ ... }) .. s .. P.reset end
 local function clear() io.write("\027[2J\027[H"); io.flush() end
@@ -233,6 +235,20 @@ local function trunc(s, w)
     if w <= 0 then return "" end
     if #s <= w then return s end
     return s:sub(1, w - 3) .. "..."
+end
+
+local function short(s, w)
+    s = tostring(s or ""):gsub("[%c]+", " ")
+    if #s <= w then return s end
+    return s:sub(1, math.max(1, w - 3)) .. "..."
+end
+
+local function push_debug(tag, msg)
+    local stamp = os.date("%H:%M:%S")
+    DEBUG_LOGS[#DEBUG_LOGS + 1] = ("[%s] %s %s"):format(stamp, tag, short(msg, 180))
+    while #DEBUG_LOGS > MAX_DEBUG_LOGS do
+        table.remove(DEBUG_LOGS, 1)
+    end
 end
 
 local function hsize(n)
@@ -302,6 +318,46 @@ local function status_box(title, msg, tone)
     clear()
     banner()
     box(title, { col(" " .. msg, TONES[tone] or P.muted) })
+end
+
+local function show_activity()
+    clear()
+    banner()
+    local lines = { col(" Recent activity", P.accent, P.bold), "" }
+    local start_index = math.max(1, #DEBUG_LOGS - 21)
+    for i = start_index, #DEBUG_LOGS do
+        lines[#lines + 1] = col(" " .. DEBUG_LOGS[i], P.muted)
+    end
+    if #DEBUG_LOGS == 0 then
+        lines[#lines + 1] = col(" No activity recorded.", P.muted)
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = col(" Press Enter to go back.", P.muted)
+    box(" Activity ", lines)
+    io.read("*l")
+end
+
+local function show_error_with_activity(title, msg)
+    while true do
+        clear()
+        banner()
+        local lines = {
+            col(" " .. msg, P.danger),
+            "",
+        }
+        if #DEBUG_LOGS > 0 then
+            lines[#lines + 1] = col(" D Activity   Enter Back", P.muted)
+        else
+            lines[#lines + 1] = col(" Press Enter to go back.", P.muted)
+        end
+        box(" " .. title .. " ", lines)
+        local value = (io.read("*l") or ""):lower():match("^%s*(.-)%s*$")
+        if value == "d" and #DEBUG_LOGS > 0 then
+            show_activity()
+        else
+            return
+        end
+    end
 end
 
 local function prog(title, sub, det, tone)
@@ -421,6 +477,7 @@ end
 
 local function http_req(method, url, hdrs, body, use_tool_api)
     local tmp = temp_path("lnx_r")
+    local err_tmp = temp_path("lnx_e")
     local body_tmp = body and temp_path("lnx_b") or nil
     if body_tmp then
         local bf = io.open(body_tmp, "wb")
@@ -431,7 +488,13 @@ local function http_req(method, url, hdrs, body, use_tool_api)
     local parts = {
         IS_WINDOWS and "curl.exe" or "curl",
         "-k",
-        "-s",
+        "-sS",
+        "--ipv4",
+        "--http1.1",
+        "--connect-timeout", "10",
+        "--max-time", "20",
+        "--retry", "2",
+        "--retry-delay", "1",
         "-o", esc(tmp),
         "-w", esc("%{http_code}"),
         "-X", method,
@@ -451,25 +514,70 @@ local function http_req(method, url, hdrs, body, use_tool_api)
         parts[#parts + 1] = esc("@" .. body_tmp)
     end
     parts[#parts + 1] = esc(url)
-    local f = io.popen(table.concat(parts, " ") .. " 2>" .. NULL_DEVICE)
+    push_debug("HTTP", method .. " " .. short(url, 96))
+    local f = io.popen(table.concat(parts, " ") .. " 2>" .. esc(err_tmp))
     local sc = tonumber((f and f:read("*a") or "0"):match("%d+")) or 0
-    if f then f:close() end
+    local close_ok, close_reason, close_code = true, "exit", 0
+    if f then
+        close_ok, close_reason, close_code = f:close()
+    end
     local raw = ""
     local rf = io.open(tmp, "r")
     if rf then
         raw = rf:read("*a") or ""
         rf:close()
     end
+    local err_raw = ""
+    local ef = io.open(err_tmp, "r")
+    if ef then
+        err_raw = ef:read("*a") or ""
+        ef:close()
+    end
     os.remove(tmp)
+    os.remove(err_tmp)
     if body_tmp then os.remove(body_tmp) end
-    return sc == 0 and nil or sc, raw
+    if sc == 0 then
+        push_debug("HTTP", ("curl failed reason=%s code=%s stderr=%s"):format(
+            tostring(close_reason),
+            tostring(close_code),
+            short(err_raw ~= "" and err_raw or "no stderr", 140)
+        ))
+        return nil, raw, {
+            stderr = err_raw,
+            close_ok = close_ok,
+            close_reason = close_reason,
+            close_code = close_code,
+        }
+    end
+    push_debug("HTTP", ("status=%s stderr=%s"):format(
+        tostring(sc),
+        short(err_raw ~= "" and err_raw or "none", 120)
+    ))
+    return sc, raw, {
+        stderr = err_raw,
+        close_ok = close_ok,
+        close_reason = close_reason,
+        close_code = close_code,
+    }
 end
 
 local function api_post(route, payload)
-    local sc, raw = http_req("POST", TOOL_API.base .. route, { "Content-Type: application/json" }, json.encode(payload), true)
-    if not sc then return nil, { message = "Server unavailable." } end
+    push_debug("API", "POST " .. route)
+    local sc, raw, meta = http_req("POST", TOOL_API.base .. route, {
+        "Accept: application/json",
+        "Content-Type: application/json",
+    }, json.encode(payload), true)
+    if not sc then return nil, { message = "Server unavailable.", debug = meta } end
     local d = json.decode(raw)
-    if type(d) ~= "table" then d = {} end
+    if type(d) ~= "table" then
+        push_debug("API", "invalid json body " .. short(raw, 140))
+        d = {}
+    end
+    push_debug("API", ("response=%s code=%s message=%s"):format(
+        tostring(sc),
+        tostring(d.code or "-"),
+        short(d.message or raw or "", 120)
+    ))
     return sc, d
 end
 
@@ -744,6 +852,7 @@ end
 local function ensure_access(hwid, lbl)
     local key = load_lic()
     if not key then return "failed", "auto login failed" end
+    push_debug("AUTH", "auto login with saved license")
     local st, msg = do_autologin(key, hwid, lbl)
     if st == "valid" then return "valid", msg end
     if st == "server" then return "server", msg end
@@ -756,13 +865,13 @@ local function run_selector(hwid, lbl)
     prog("Loading", "Refreshing Lunex Delta Lite Clones...", " Contacting Gofile...")
     local ok_s, sess, items = pcall(gf_new_session)
     if not ok_s then
-        prog("Load failed", "Unable to fetch clone list", " " .. tostring(sess), "danger")
-        sleep(2)
+        push_debug("GOFILE", tostring(sess))
+        show_error_with_activity("Load failed", "Unable to fetch clone list.")
         return 1
     end
     if #items == 0 then
-        prog("No files", "No clones were found", " Nothing available to install.", "warning")
-        sleep(2)
+        push_debug("GOFILE", "no clone files returned")
+        show_error_with_activity("Load failed", "No clones were found.")
         return 1
     end
 
@@ -800,8 +909,8 @@ local function run_selector(hwid, lbl)
                 end
                 local ast, amsg = ensure_access(hwid, lbl)
                 if ast == "server" then
-                    msg = { "danger", amsg }
-                    goto continue
+                    show_error_with_activity("Access", amsg)
+                    return 2
                 end
                 if ast ~= "valid" then
                     status_box(" Access ", amsg, "danger")
@@ -817,8 +926,8 @@ local function run_selector(hwid, lbl)
             elseif cursor == as + 1 then
                 local ast, amsg = ensure_access(hwid, lbl)
                 if ast == "server" then
-                    msg = { "danger", amsg }
-                    goto continue
+                    show_error_with_activity("Access", amsg)
+                    return 2
                 end
                 if ast ~= "valid" then
                     status_box(" Access ", amsg, "danger")
@@ -835,7 +944,9 @@ local function run_selector(hwid, lbl)
                     msg = { "success", "Clone list refreshed." }
                     total_rows = #items + 3
                 else
-                    msg = { "danger", "Refresh failed: " .. tostring(rs) }
+                    push_debug("GOFILE", "refresh failed " .. tostring(rs))
+                    show_error_with_activity("Refresh", "Refresh failed.")
+                    return 2
                 end
             else
                 return 0
@@ -848,6 +959,7 @@ end
 local function try_saved_login(hwid, lbl)
     local key = load_lic()
     if not key then return "missing", nil end
+    push_debug("AUTH", "checking saved license")
     status_box(" Access ", "Checking saved license...", "warning")
     local st, msg = do_autologin(key, hwid, lbl)
     if st == "valid" then return "valid", key end
@@ -859,6 +971,8 @@ end
 local function main()
     mkdirp(LROOT)
     local hwid, lbl = device_id()
+    push_debug("BOOT", "tool base " .. TOOL_API.base)
+    push_debug("BOOT", "device " .. short(lbl, 48) .. " hwid " .. hwid:sub(1, 12))
     local notice = nil
 
     local sl_st, sl_msg = try_saved_login(hwid, lbl)
@@ -869,7 +983,7 @@ local function main()
         else os.exit(r) end
     end
     if sl_st == "server" then
-        status_box(" Access ", tostring(sl_msg), "danger")
+        show_error_with_activity("Access", tostring(sl_msg))
         os.exit(1)
     end
     if sl_st == "failed" then
@@ -898,7 +1012,7 @@ local function main()
         status_box(" Access ", "Checking license...", "warning")
         local ls, lm = chk_license(key)
         if ls == "server" then
-            status_box(" Access ", lm, "danger")
+            show_error_with_activity("Access", lm)
             os.exit(1)
         end
         if ls ~= "valid" then
@@ -929,7 +1043,7 @@ local function main()
             local cs, cm = do_validate(key, tc, hwid, lbl)
 
             if cs == "server" then
-                status_box(" Verification ", cm, "danger")
+                show_error_with_activity("Verification", cm)
                 os.exit(1)
             end
 
