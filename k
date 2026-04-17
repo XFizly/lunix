@@ -322,12 +322,12 @@ end
 --     pip install lolcat    OR    pkg install ruby && gem install lolcat
 -- ─────────────────────────────────────────────────────────────────────────────
 local BUILTIN_LOGO = {
-    { C.b1, "  ██╗     ██╗   ██╗███╗  ██╗███████╗██╗  ██╗" },
-    { C.b2, "  ██║     ██║   ██║████╗ ██║██╔════╝╚██╗██╔╝" },
-    { C.b3, "  ██║     ██║   ██║██╔██╗██║█████╗   ╚███╔╝ " },
-    { C.b4, "  ██║     ██║   ██║██║╚████║██╔══╝   ██╔██╗ " },
-    { C.b5, "  ███████╗╚██████╔╝██║ ╚███║███████╗██╔╝╚██╗" },
-    { C.b6, "  ╚══════╝ ╚═════╝ ╚═╝  ╚══╝╚══════╝╚═╝  ╚═╝" },
+    { C.b1, "  ██╗     ██╗   ██╗███╗   ██╗███████╗██╗  ██╗  " },
+    { C.b2, "  ██║     ██║   ██║████╗  ██║██╔════╝╚██╗██╔╝  " },
+    { C.b3, "  ██║     ██║   ██║██╔██╗ ██║█████╗   ╚███╔╝   " },
+    { C.b4, "  ██║     ██║   ██║██║╚██╗██║██╔══╝   ██╔██╗   " },
+    { C.b5, "  ███████╗╚██████╔╝██║ ╚████║███████╗██╔╝╚██╗  " },
+    { C.b6, "  ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝  " },
 }
 
 local function split_lines(s)
@@ -342,7 +342,7 @@ local LOGO_CACHE, LOGO_PRE_COLORED = nil, false
 local function build_logo_cache()
     -- 1. toilet  (Termux: pkg install toilet)
     if cmd_exists("toilet") then
-        for _, font in ipairs({ "mono9", "smblock", "bigmono9", "smmono9" }) do
+        for _, font in ipairs({ "future", "mono12", "mono9", "bigmono9", "smblock", "smmono9" }) do
             local out = run_all("toilet -f " .. font .. " -w 120 LUNEX")
             if out:match("%S") then
                 local lines = split_lines(out)
@@ -372,7 +372,7 @@ local function build_logo_cache()
 
     -- 2. figlet  (Termux: pkg install figlet)
     if cmd_exists("figlet") then
-        for _, font in ipairs({ "slant", "big", "standard", "banner3" }) do
+        for _, font in ipairs({ "big", "banner3-D", "standard", "slant" }) do
             local out = run_all("figlet -f " .. font .. " -w 120 LUNEX")
             if out:match("%S") then
                 local lines = split_lines(out)
