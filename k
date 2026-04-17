@@ -876,43 +876,62 @@ end
 -- ══════════════════════════════════════════════════════════════════
 --  Install results summary
 -- ══════════════════════════════════════════════════════════════════
-local function render_install_summary(results)
-    clear(); draw_header("Install Summary")
-    local ok_n, fail_n, skip_n = 0, 0, 0
+local function render_download_summary(results)
+    clear(); draw_header("Download Summary")
+    local ok_n, fail_n = 0, 0
     for _, r in ipairs(results) do
-        if r.inst     then ok_n=ok_n+1
-        elseif r.dl   then fail_n=fail_n+1
-        else               skip_n=skip_n+1 end
+        if r.ok then ok_n = ok_n + 1 else fail_n = fail_n + 1 end
     end
     sp()
     info_card({
-        col("✔ Installed",     C.success, C.bold).."  "..col(tostring(ok_n),   C.text),
-        col("✖ Failed",        C.danger,  C.bold).."   "..col(tostring(fail_n), fail_n>0 and C.warning or C.muted),
-        col("⊘ Skipped",       C.muted,   C.bold).."  "..col(tostring(skip_n), C.muted),
+        col("Successfully downloaded", C.success, C.bold).."  "..col(tostring(ok_n), C.text),
+        col("Failed", C.danger, C.bold).."  "..col(tostring(fail_n), fail_n > 0 and C.warning or C.muted),
+        col("Folder", C.muted, C.bold).."  "..col(sanitize_terminal_text(DL_ROOT, 42), C.accent),
     }, C.border_mid)
     sp()
     info_card({
-        col("All downloaded files were automatically deleted after install.", C.text),
-        col("Only selected clones were processed.", C.muted),
+        col("Go to "..DL_ROOT.." and install however many clones you want.", C.text),
+        col("Everything was downloaded now because the files may expire later.", C.muted),
     }, C.border)
     sp()
     for _, r in ipairs(results) do
-        local icon, bc, nc
-        if r.inst then
-            icon = col("[✔] ", C.success, C.bold); bc = C.border_mid; nc = C.text
-        elseif r.dl then
-            icon = col("[✖] ", C.danger,  C.bold); bc = C.border_err; nc = C.warning
-        else
-            icon = col("[⊘] ", C.muted,   C.bold); bc = C.border;     nc = C.muted
-        end
+        local icon = r.ok and col("[↓] ", C.success, C.bold) or col("[✖] ", C.danger, C.bold)
+        local bc   = r.ok and C.border_mid or C.border_err
+        local nc   = r.ok and C.text or C.warning
         item_box(icon..col(trunc(sanitize_terminal_text(r.name, tw()-14), tw()-14), nc), false, bc)
         if r.msg and r.msg ~= "" then
-            info_card({col("    "..r.msg, r.inst and C.muted or C.warning)}, C.border)
+            info_card({col("    "..sanitize_terminal_text(r.msg, tw()-10), C.muted)}, C.border)
         end
     end
     sp()
-    item_box(pad_c(col("Press Enter to return.", C.muted), tw() - 8), false, C.border)
+    item_box(pad_c(col("Press Enter to go back.", C.muted), tw() - 8), false, C.border)
     io.read("*l")
+end
+
+local function download_all_clones(entries, sess)
+    local results = {}
+    mkdirp(DL_ROOT)
+    for pos, apk in ipairs(entries) do
+        local name_short = sanitize_terminal_text(apk.name, 55)
+        mdelay(pos, #entries, pos * 3, 2, 0.3, "Downloading  ("..pos.."/"..#entries..")")
+        prog("Downloading  ("..pos.."/"..#entries..")", name_short, hsize(apk.size), "accent")
+
+        local dl_ok, dest_or_err = pcall(dl_apk, sess, apk)
+        if dl_ok then
+            local saved_path = sanitize_terminal_text(dest_or_err, 100)
+            push_debug("DL", "OK "..saved_path)
+            results[#results + 1] = { name = apk.name, ok = true, msg = "Saved to "..saved_path }
+            prog("Downloaded  ("..pos.."/"..#entries..")", name_short, "Saved to folder", "success")
+            sleep(0.7)
+        else
+            local emsg = sanitize_terminal_text(tostring(dest_or_err), 100)
+            push_debug("DL", "FAIL "..name_short.." "..emsg)
+            results[#results + 1] = { name = apk.name, ok = false, msg = emsg }
+            prog("Download Failed  ("..pos.."/"..#entries..")", name_short, emsg, "danger")
+            sleep(1.2)
+        end
+    end
+    return results
 end
 
 -- ══════════════════════════════════════════════════════════════════
@@ -1149,8 +1168,168 @@ end
 -- ══════════════════════════════════════════════════════════════════
 --  Main Menu
 -- ══════════════════════════════════════════════════════════════════
+local BTN_DOWNLOAD = 1
+local BTN_BACK = 2
+
+render_catalog = function(entries, cursor, scroll, msg)
+    clear(); draw_header("Clones Catalog")
+    reset_click_regions()
+    local w = tw()
+    local n_entries = #entries
+    local max_vis = math.max(4, th() - 28)
+    local scroll_top = math.max(1, math.min(scroll, math.max(1, n_entries - max_vis + 1)))
+    local scroll_bot = math.min(n_entries, scroll_top + max_vis - 1)
+    local y = header_line_count("Clones Catalog")
+
+    local tot_sz = 0
+    for _, e in ipairs(entries) do tot_sz = tot_sz + (e.size or 0) end
+
+    info_card({
+        col("Folder:", C.muted).."  "..col(sanitize_terminal_text(DL_ROOT, 42), C.accent),
+        col("Clones:", C.muted).."  "..col(tostring(n_entries), C.accent, C.bold).."  ("..col(hsize(tot_sz), C.text)..")",
+        col("Action:", C.muted).."  "..col("Download every clone at once", C.success),
+    }, C.border_mid)
+    y = y + 4
+    sp(); y = y + 1
+
+    if msg then
+        item_box(pad_c(col(tone_icon(msg[1]).."  "..msg[2], TONES[msg[1]] or C.muted, C.bold), w-8), false, TONES[msg[1]])
+        y = y + 3
+        sp(); y = y + 1
+    end
+
+    info_card({
+        col("Go to "..DL_ROOT.." and install however many clones you want.", C.text),
+        col("They are downloaded now because the files may expire later.", C.muted),
+        col("Downloading everything gives the lowest chance of losing them later.", C.muted),
+    }, C.border)
+    y = y + 5
+    sp(); y = y + 1
+
+    if scroll_top > 1 then
+        io.write(pad_c(col("▲ "..(scroll_top - 1).." more above", C.dim), w).."\n")
+        y = y + 1
+    end
+
+    for i = scroll_top, scroll_bot do
+        local e = entries[i]
+        local size = col(hsize(e.size), C.dim)
+        local name = col(trunc(sanitize_terminal_text(e.name, tw()-22), tw()-22), C.text)
+        local gap = math.max(1, (tw() - 8) - vlen(name) - vlen(size) - 4)
+        item_box(col(string.format("%02d", i), C.accent, C.bold).."  "..name..string.rep(" ", gap)..size, false, C.border)
+        y = y + 3
+    end
+
+    if scroll_bot < n_entries then
+        io.write(pad_c(col("▼ "..(n_entries - scroll_bot).." more below", C.dim), w).."\n")
+        y = y + 1
+    end
+
+    sp(); y = y + 1
+
+    local b1_active = cursor == BTN_DOWNLOAD
+    item_box(pad_c(col("[+]", b1_active and C.success or C.muted, C.bold).."  "
+        ..col("Download clones", b1_active and C.success or C.text), w-8), b1_active, b1_active and C.success or C.border)
+    add_click_region(y, y+2, "btn", BTN_DOWNLOAD); y = y + 3
+
+    local b2_active = cursor == BTN_BACK
+    item_box(pad_c(col("[←]", b2_active and C.danger or C.muted, C.bold).."  "
+        ..col("Go back", b2_active and C.danger or C.muted), w-8), b2_active, b2_active and C.danger or C.border)
+    add_click_region(y, y+2, "btn", BTN_BACK)
+
+    footer_line("Downloads only", "Open the folder after completion")
+    hint_bar({ {"↑↓","scroll/actions"}, {"Enter","select"}, {"Q","back"} })
+end
+
+run_catalog = function(hwid, lbl)
+    local msg = nil
+
+    prog("Loading", "Fetching clones catalog…", "Refreshing package list…", "accent")
+    local ok_s, sess, items = pcall(gf_new_session)
+    if not ok_s then
+        push_debug("CATALOG", tostring(sess))
+        show_error("Load Failed","Unable to fetch clone list.")
+        return 1
+    end
+    if #items == 0 then
+        push_debug("CATALOG","empty")
+        show_error("Load Failed","No clones were found.")
+        return 1
+    end
+
+    local cursor = BTN_DOWNLOAD
+    local scroll = 1
+    set_mouse_mode(true)
+
+    local function leave(code)
+        set_mouse_mode(false)
+        return code
+    end
+
+    local function do_download()
+        local ast, amsg = ensure_access(hwid, lbl)
+        if ast == "server" then
+            show_error("Access", amsg)
+            return 2
+        end
+        if ast ~= "valid" then
+            status_box("Access", amsg, "danger")
+            sleep(1)
+            return 2
+        end
+        set_mouse_mode(false)
+        local results = download_all_clones(items, sess)
+        render_download_summary(results)
+        set_mouse_mode(true)
+        msg = {"success","All clones were downloaded to "..DL_ROOT}
+        return nil
+    end
+
+    while true do
+        render_catalog(items, cursor, scroll, msg)
+        msg = nil
+        local key = read_key()
+
+        if key == "UP" then
+            if cursor == BTN_DOWNLOAD then
+                scroll = math.max(1, scroll - 1)
+            else
+                cursor = BTN_DOWNLOAD
+            end
+        elseif key == "DOWN" then
+            local max_scroll = math.max(1, #items - math.max(4, th() - 28) + 1)
+            if cursor == BTN_DOWNLOAD then
+                cursor = BTN_BACK
+            else
+                scroll = math.min(max_scroll, scroll + 1)
+            end
+        elseif key == "Q" then
+            return leave(0)
+        elseif key == "ENTER" then
+            if cursor == BTN_DOWNLOAD then
+                local rc = do_download()
+                if rc then return leave(rc) end
+            else
+                return leave(0)
+            end
+        elseif key:match("^CLICK:") then
+            local click_y = tonumber(key:match("^CLICK:(%d+)$"))
+            local kind, value = resolve_click_region(click_y or -1)
+            if kind == "btn" then
+                cursor = value
+                if value == BTN_DOWNLOAD then
+                    local rc = do_download()
+                    if rc then return leave(rc) end
+                else
+                    return leave(0)
+                end
+            end
+        end
+    end
+end
+
 local MENU_ITEMS = {
-    { icon = "[+]", label = "Download & Install Clones", color = C.accent, enabled = true  },
+    { icon = "[+]", label = "Download Clones",           color = C.accent, enabled = true  },
     { icon = "[*]", label = "Clones Position",           color = C.soon,   enabled = false },
 }
 
