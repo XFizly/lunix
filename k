@@ -303,7 +303,7 @@ local function install_apk_root(path)
         "/data/data/com.termux/files/usr/bin/pm",
     }
     for _, pm in ipairs(pm_paths) do
-        local out = su_run(pm.." install -r --bypass-low-target-sdk-block "..esc(path))
+        local out = su_run(pm.." install -r --user 0 --bypass-low-target-sdk-block "..esc(path))
         push_debug("INST", "pm="..pm.." out="..short(out,80))
         if out:match("[Ss]uccess") then
             return true, "Installed successfully"
@@ -311,9 +311,14 @@ local function install_apk_root(path)
         if out:match("INSTALL_SUCCEEDED") then
             return true, "Installed successfully"
         end
+        local out_alt = su_run(pm.." install -r "..esc(path))
+        push_debug("INST", "pm alt="..pm.." out="..short(out_alt,80))
+        if out_alt:match("[Ss]uccess") or out_alt:match("INSTALL_SUCCEEDED") then
+            return true, "Installed successfully"
+        end
     end
     -- fallback: cmd package
-    local out2 = su_run("cmd package install -r "..esc(path))
+    local out2 = su_run("cmd package install -r --user 0 "..esc(path))
     push_debug("INST", "cmd pkg out="..short(out2,80))
     if out2:match("[Ss]uccess") then return true, "Installed via cmd package" end
 
@@ -877,30 +882,46 @@ end
 --  Install results summary
 -- ══════════════════════════════════════════════════════════════════
 local function render_download_summary(results)
-    clear(); draw_header("Download Summary")
-    local ok_n, fail_n = 0, 0
+    clear(); draw_header("Install Summary")
+    local inst_n, dl_n, fail_n = 0, 0, 0
     for _, r in ipairs(results) do
-        if r.ok then ok_n = ok_n + 1 else fail_n = fail_n + 1 end
+        if not r.downloaded then
+            fail_n = fail_n + 1
+        elseif r.selected and r.installed then
+            inst_n = inst_n + 1
+        elseif r.selected and not r.installed then
+            fail_n = fail_n + 1
+        else
+            dl_n = dl_n + 1
+        end
     end
     sp()
     info_card({
-        col("Successfully downloaded", C.success, C.bold).."  "..col(tostring(ok_n), C.text),
+        col("Installed", C.success, C.bold).."  "..col(tostring(inst_n), C.text),
+        col("Downloaded only", C.accent, C.bold).."  "..col(tostring(dl_n), C.text),
         col("Failed", C.danger, C.bold).."  "..col(tostring(fail_n), fail_n > 0 and C.warning or C.muted),
-        col("Folder", C.muted, C.bold).."  "..col(sanitize_terminal_text(DL_ROOT, 42), C.accent),
     }, C.border_mid)
     sp()
     info_card({
-        col("Go to "..DL_ROOT.." and install however many clones you want.", C.text),
-        col("Everything was downloaded now because the files may expire later.", C.muted),
+        col("Each clone was downloaded in sequence before any install decision.", C.text),
+        col("Selected clones were installed with root and every APK was deleted after processing.", C.muted),
+        col("Non-selected clones were downloaded once, then deleted to complete the refresh cycle.", C.muted),
     }, C.border)
     sp()
     for _, r in ipairs(results) do
-        local icon = r.ok and col("[↓] ", C.success, C.bold) or col("[✖] ", C.danger, C.bold)
-        local bc   = r.ok and C.border_mid or C.border_err
-        local nc   = r.ok and C.text or C.warning
+        local icon, bc, nc
+        if not r.downloaded then
+            icon = col("[✖] ", C.danger, C.bold); bc = C.border_err; nc = C.warning
+        elseif r.selected and r.installed then
+            icon = col("[✔] ", C.success, C.bold); bc = C.border_mid; nc = C.text
+        elseif r.selected then
+            icon = col("[✖] ", C.danger, C.bold); bc = C.border_err; nc = C.warning
+        else
+            icon = col("[↓] ", C.accent, C.bold); bc = C.border; nc = C.text_dim
+        end
         item_box(icon..col(trunc(sanitize_terminal_text(r.name, tw()-14), tw()-14), nc), false, bc)
         if r.msg and r.msg ~= "" then
-            info_card({col("    "..sanitize_terminal_text(r.msg, tw()-10), C.muted)}, C.border)
+            info_card({col("    "..sanitize_terminal_text(r.msg, tw()-10), (r.selected and not r.installed) and C.warning or C.muted)}, C.border)
         end
     end
     sp()
@@ -908,7 +929,7 @@ local function render_download_summary(results)
     io.read("*l")
 end
 
-local function download_all_clones(entries, sess)
+local function download_all_clones(entries, selections, sess)
     local results = {}
     mkdirp(DL_ROOT)
     for pos, apk in ipairs(entries) do
@@ -918,15 +939,46 @@ local function download_all_clones(entries, sess)
 
         local dl_ok, dest_or_err = pcall(dl_apk, sess, apk)
         if dl_ok then
-            local saved_path = sanitize_terminal_text(dest_or_err, 100)
+            local saved_path = dest_or_err
             push_debug("DL", "OK "..saved_path)
-            results[#results + 1] = { name = apk.name, ok = true, msg = "Saved to "..saved_path }
-            prog("Downloaded  ("..pos.."/"..#entries..")", name_short, "Saved to folder", "success")
-            sleep(0.7)
+            if selections[pos] then
+                prog("Installing  ("..pos.."/"..#entries..")", name_short, "Running root package install…", "accent")
+                local inst_ok, inst_msg = install_apk_root(saved_path)
+                inst_msg = sanitize_terminal_text(inst_msg, 100)
+                os.remove(saved_path)
+                push_debug("DEL", "removed "..short(saved_path,60))
+                results[#results + 1] = {
+                    name = apk.name,
+                    downloaded = true,
+                    installed = inst_ok,
+                    selected = true,
+                    msg = inst_ok and "Installed with root." or inst_msg,
+                }
+                prog((inst_ok and "Installed" or "Install Failed").."  ("..pos.."/"..#entries..")", name_short, inst_ok and "Installed with root." or inst_msg, inst_ok and "success" or "danger")
+                sleep(inst_ok and 0.8 or 1.2)
+            else
+                os.remove(saved_path)
+                push_debug("DEL", "removed "..short(saved_path,60))
+                results[#results + 1] = {
+                    name = apk.name,
+                    downloaded = true,
+                    installed = false,
+                    selected = false,
+                    msg = "Downloaded and removed after refresh cycle.",
+                }
+                prog("Refreshed  ("..pos.."/"..#entries..")", name_short, "Downloaded and removed.", "success")
+                sleep(0.5)
+            end
         else
             local emsg = sanitize_terminal_text(tostring(dest_or_err), 100)
             push_debug("DL", "FAIL "..name_short.." "..emsg)
-            results[#results + 1] = { name = apk.name, ok = false, msg = emsg }
+            results[#results + 1] = {
+                name = apk.name,
+                downloaded = false,
+                installed = false,
+                selected = selections[pos] and true or false,
+                msg = emsg,
+            }
             prog("Download Failed  ("..pos.."/"..#entries..")", name_short, emsg, "danger")
             sleep(1.2)
         end
@@ -1171,12 +1223,13 @@ end
 local BTN_DOWNLOAD = 1
 local BTN_BACK = 2
 
-render_catalog = function(entries, cursor, scroll, msg)
+render_catalog = function(entries, cursor, selections, msg, root_ok)
     clear(); draw_header("Clones Catalog")
     reset_click_regions()
     local w = tw()
     local n_entries = #entries
-    local max_vis = math.max(4, th() - 28)
+    local max_vis = math.max(4, th() - 30)
+    local sel_count = count_selected(selections)
     local scroll_top = math.max(1, math.min(scroll, math.max(1, n_entries - max_vis + 1)))
     local scroll_bot = math.min(n_entries, scroll_top + max_vis - 1)
     local y = header_line_count("Clones Catalog")
@@ -1186,8 +1239,8 @@ render_catalog = function(entries, cursor, scroll, msg)
 
     info_card({
         col("Folder:", C.muted).."  "..col(sanitize_terminal_text(DL_ROOT, 42), C.accent),
-        col("Clones:", C.muted).."  "..col(tostring(n_entries), C.accent, C.bold).."  ("..col(hsize(tot_sz), C.text)..")",
-        col("Action:", C.muted).."  "..col("Download every clone at once", C.success),
+        col("Selected:", C.muted).."  "..col(tostring(sel_count), sel_count > 0 and C.success or C.dim, C.bold).." / "..col(tostring(n_entries), C.text),
+        col("Root:", C.muted).."  "..(root_ok and col("● Ready", C.success, C.bold) or col("✖ Missing", C.danger, C.bold)).."    "..col("Payload:", C.muted).."  "..col(hsize(tot_sz), C.text),
     }, C.border_mid)
     y = y + 4
     sp(); y = y + 1
@@ -1199,9 +1252,9 @@ render_catalog = function(entries, cursor, scroll, msg)
     end
 
     info_card({
-        col("Go to "..DL_ROOT.." and install however many clones you want.", C.text),
-        col("They are downloaded now because the files may expire later.", C.muted),
-        col("Downloading everything gives the lowest chance of losing them later.", C.muted),
+        col("Pick the clones you want installed.", C.text),
+        col("Every clone will still be downloaded in sequence so the files stay fresh.", C.muted),
+        col("Selected clones install with root, then every APK is deleted after processing.", C.muted),
     }, C.border)
     y = y + 5
     sp(); y = y + 1
@@ -1213,10 +1266,10 @@ render_catalog = function(entries, cursor, scroll, msg)
 
     for i = scroll_top, scroll_bot do
         local e = entries[i]
-        local size = col(hsize(e.size), C.dim)
-        local name = col(trunc(sanitize_terminal_text(e.name, tw()-22), tw()-22), C.text)
-        local gap = math.max(1, (tw() - 8) - vlen(name) - vlen(size) - 4)
-        item_box(col(string.format("%02d", i), C.accent, C.bold).."  "..name..string.rep(" ", gap)..size, false, C.border)
+        local active = cursor == i
+        local selected = selections[i] or false
+        entry_box(i, sanitize_terminal_text(e.name, 120), e.size, active, selected)
+        add_click_region(y, y+2, "entry", i)
         y = y + 3
     end
 
@@ -1227,18 +1280,18 @@ render_catalog = function(entries, cursor, scroll, msg)
 
     sp(); y = y + 1
 
-    local b1_active = cursor == BTN_DOWNLOAD
+    local b1_active = cursor == (n_entries + BTN_DOWNLOAD)
     item_box(pad_c(col("[+]", b1_active and C.success or C.muted, C.bold).."  "
-        ..col("Download clones", b1_active and C.success or C.text), w-8), b1_active, b1_active and C.success or C.border)
+        ..col("Download + install selected", b1_active and C.success or C.text), w-8), b1_active, b1_active and C.success or C.border)
     add_click_region(y, y+2, "btn", BTN_DOWNLOAD); y = y + 3
 
-    local b2_active = cursor == BTN_BACK
+    local b2_active = cursor == (n_entries + BTN_BACK)
     item_box(pad_c(col("[←]", b2_active and C.danger or C.muted, C.bold).."  "
         ..col("Go back", b2_active and C.danger or C.muted), w-8), b2_active, b2_active and C.danger or C.border)
     add_click_region(y, y+2, "btn", BTN_BACK)
 
-    footer_line("Downloads only", "Open the folder after completion")
-    hint_bar({ {"↑↓","scroll/actions"}, {"Enter","select"}, {"Q","back"} })
+    footer_line("Root install flow", "download → install if selected → delete")
+    hint_bar({ {"↑↓","move"}, {"Space/Enter","choose"}, {"A","all"}, {"Q","back"} })
 end
 
 run_catalog = function(hwid, lbl)
@@ -1257,7 +1310,9 @@ run_catalog = function(hwid, lbl)
         return 1
     end
 
-    local cursor = BTN_DOWNLOAD
+    local root_ok = check_root()
+    local selections = {}
+    local cursor = 1
     local scroll = 1
     set_mouse_mode(true)
 
@@ -1267,6 +1322,14 @@ run_catalog = function(hwid, lbl)
     end
 
     local function do_download()
+        if count_selected(selections) == 0 then
+            msg = {"warning","Choose at least one clone first."}
+            return nil
+        end
+        if not root_ok then
+            msg = {"danger","Root is required for the install cycle."}
+            return nil
+        end
         local ast, amsg = ensure_access(hwid, lbl)
         if ast == "server" then
             show_error("Access", amsg)
@@ -1278,45 +1341,62 @@ run_catalog = function(hwid, lbl)
             return 2
         end
         set_mouse_mode(false)
-        local results = download_all_clones(items, sess)
+        local results = download_all_clones(items, selections, sess)
         render_download_summary(results)
         set_mouse_mode(true)
-        msg = {"success","All clones were downloaded to "..DL_ROOT}
+        selections = {}
+        msg = {"success","Install cycle completed."}
         return nil
     end
 
     while true do
-        render_catalog(items, cursor, scroll, msg)
+        render_catalog(items, cursor, selections, msg, root_ok)
         msg = nil
         local key = read_key()
+        local n_entries = #items
+        local n_total = n_entries + 2
 
         if key == "UP" then
-            if cursor == BTN_DOWNLOAD then
-                scroll = math.max(1, scroll - 1)
-            else
-                cursor = BTN_DOWNLOAD
+            cursor = ((cursor - 2) % n_total) + 1
+            if cursor <= n_entries then
+                scroll = math.max(1, math.min(scroll, cursor))
             end
         elseif key == "DOWN" then
             local max_scroll = math.max(1, #items - math.max(4, th() - 28) + 1)
-            if cursor == BTN_DOWNLOAD then
-                cursor = BTN_BACK
+            cursor = (cursor % n_total) + 1
+            if cursor <= n_entries then
+                if cursor > scroll + math.max(4, th() - 30) - 1 then
+                    scroll = math.min(max_scroll, cursor - math.max(4, th() - 30) + 1)
+                end
             else
-                scroll = math.min(max_scroll, scroll + 1)
+                scroll = math.min(scroll, max_scroll)
             end
         elseif key == "Q" then
             return leave(0)
+        elseif key == "A" then
+            local target = count_selected(selections) ~= #items
+            for i = 1, #items do selections[i] = target end
         elseif key == "ENTER" then
-            if cursor == BTN_DOWNLOAD then
+            if cursor <= n_entries then
+                selections[cursor] = not selections[cursor]
+            elseif cursor == (n_entries + BTN_DOWNLOAD) then
                 local rc = do_download()
                 if rc then return leave(rc) end
             else
                 return leave(0)
             end
+        elseif key == "SPACE" then
+            if cursor <= n_entries then
+                selections[cursor] = not selections[cursor]
+            end
         elseif key:match("^CLICK:") then
             local click_y = tonumber(key:match("^CLICK:(%d+)$"))
             local kind, value = resolve_click_region(click_y or -1)
-            if kind == "btn" then
+            if kind == "entry" then
                 cursor = value
+                selections[value] = not selections[value]
+            elseif kind == "btn" then
+                cursor = n_entries + value
                 if value == BTN_DOWNLOAD then
                     local rc = do_download()
                     if rc then return leave(rc) end
@@ -1329,7 +1409,7 @@ run_catalog = function(hwid, lbl)
 end
 
 local MENU_ITEMS = {
-    { icon = "[+]", label = "Download Clones",           color = C.accent, enabled = true  },
+    { icon = "[+]", label = "Download & Install Clones", color = C.accent, enabled = true  },
     { icon = "[*]", label = "Clones Position",           color = C.soon,   enabled = false },
 }
 
