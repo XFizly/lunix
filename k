@@ -375,7 +375,7 @@ local function entry_box(idx, name, size, active, selected, bc_override)
     -- checkbox glyph
     local chk, chk_c
     if selected then
-        chk = "✓"; chk_c = C.check
+        chk = "x"; chk_c = C.check
     else
         chk = " "; chk_c = C.dim
     end
@@ -437,7 +437,7 @@ local function hint_bar(hints)
     for _, h in ipairs(hints) do
         parts[#parts+1] = col(h[1], C.accent, C.bold).." "..col(h[2], C.muted)
     end
-    local line = table.concat(parts, col("  ·  ", C.dim))
+    local line = table.concat(parts, col("  |  ", C.dim))
     io.write("\n"..pad_c(line, w).."\n")
 end
 
@@ -450,8 +450,8 @@ local function footer_line(left, right)
 end
 
 local function tone_icon(tone)
-    local icons = { success="✔", danger="✖", warning="▲", accent="›", soon="✦" }
-    return icons[tone] or "·"
+    local icons = { success="[OK]", danger="[X]", warning="[!]", accent="[>]", soon="[*]" }
+    return icons[tone] or "[i]"
 end
 
 local function header_line_count(subtitle)
@@ -558,11 +558,28 @@ end
 -- ══════════════════════════════════════════════════════════════════
 local READ_KEY_CMD = [[bash -c '
 exec </dev/tty
-IFS= read -r -s -n1 k || exit 0
+oldstty=$(stty -g </dev/tty 2>/dev/null || printf "")
+restore() {
+  if [ -n "$oldstty" ]; then
+    stty "$oldstty" </dev/tty 2>/dev/null
+  fi
+}
+trap restore EXIT
+stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null || true
+read1() {
+  dd bs=1 count=1 2>/dev/null </dev/tty
+}
+k=$(read1)
+if [ -z "$k" ]; then
+  printf ENTER
+  exit 0
+fi
 if [ "$k" = $'\''\e'\'' ]; then
-  IFS= read -r -s -n1 -t0.05 a || { printf ESC; exit 0; }
+  a=$(read1)
+  [ -z "$a" ] && { printf ESC; exit 0; }
   if [ "$a" = "[" ]; then
-    IFS= read -r -s -n1 -t0.05 b || { printf ESC; exit 0; }
+    b=$(read1)
+    [ -z "$b" ] && { printf ESC; exit 0; }
     case "$b" in
       A) printf UP; exit 0 ;;
       B) printf DOWN; exit 0 ;;
@@ -570,7 +587,9 @@ if [ "$k" = $'\''\e'\'' ]; then
       D) printf LEFT; exit 0 ;;
       "<")
         seq=""
-        while IFS= read -r -s -n1 -t0.05 c; do
+        while :; do
+          c=$(read1)
+          [ -z "$c" ] && break
           seq="$seq$c"
           case "$c" in M|m) break ;; esac
         done
@@ -911,13 +930,13 @@ local function render_download_summary(results)
     for _, r in ipairs(results) do
         local icon, bc, nc
         if not r.downloaded then
-            icon = col("[✖] ", C.danger, C.bold); bc = C.border_err; nc = C.warning
+            icon = col("[X] ", C.danger, C.bold); bc = C.border_err; nc = C.warning
         elseif r.selected and r.installed then
-            icon = col("[✔] ", C.success, C.bold); bc = C.border_mid; nc = C.text
+            icon = col("[OK] ", C.success, C.bold); bc = C.border_mid; nc = C.text
         elseif r.selected then
-            icon = col("[✖] ", C.danger, C.bold); bc = C.border_err; nc = C.warning
+            icon = col("[X] ", C.danger, C.bold); bc = C.border_err; nc = C.warning
         else
-            icon = col("[↓] ", C.accent, C.bold); bc = C.border; nc = C.text_dim
+            icon = col("[DL] ", C.accent, C.bold); bc = C.border; nc = C.text_dim
         end
         item_box(icon..col(trunc(sanitize_terminal_text(r.name, tw()-14), tw()-14), nc), false, bc)
         if r.msg and r.msg ~= "" then
@@ -1240,7 +1259,7 @@ render_catalog = function(entries, cursor, selections, scroll, msg, root_ok)
     info_card({
         col("Folder:", C.muted).."  "..col(sanitize_terminal_text(DL_ROOT, 42), C.accent),
         col("Selected:", C.muted).."  "..col(tostring(sel_count), sel_count > 0 and C.success or C.dim, C.bold).." / "..col(tostring(n_entries), C.text),
-        col("Root:", C.muted).."  "..(root_ok and col("● Ready", C.success, C.bold) or col("✖ Missing", C.danger, C.bold)).."    "..col("Payload:", C.muted).."  "..col(hsize(tot_sz), C.text),
+        col("Root:", C.muted).."  "..(root_ok and col("[OK] Ready", C.success, C.bold) or col("[NO] Missing", C.danger, C.bold)).."    "..col("Payload:", C.muted).."  "..col(hsize(tot_sz), C.text),
     }, C.border_mid)
     y = y + 4
     sp(); y = y + 1
@@ -1253,14 +1272,14 @@ render_catalog = function(entries, cursor, selections, scroll, msg, root_ok)
 
     info_card({
         col("Pick the clones you want installed.", C.text),
-        col("Every clone will still be downloaded in sequence so the files stay fresh.", C.muted),
-        col("Selected clones install with root, then every APK is deleted after processing.", C.muted),
+        col("All clones are downloaded in order so the files stay fresh.", C.muted),
+        col("Selected clones install with root, then every APK is deleted.", C.muted),
     }, C.border)
     y = y + 5
     sp(); y = y + 1
 
     if scroll_top > 1 then
-        io.write(pad_c(col("▲ "..(scroll_top - 1).." more above", C.dim), w).."\n")
+        io.write(pad_c(col("^ "..(scroll_top - 1).." more above", C.dim), w).."\n")
         y = y + 1
     end
 
@@ -1274,7 +1293,7 @@ render_catalog = function(entries, cursor, selections, scroll, msg, root_ok)
     end
 
     if scroll_bot < n_entries then
-        io.write(pad_c(col("▼ "..(n_entries - scroll_bot).." more below", C.dim), w).."\n")
+        io.write(pad_c(col("v "..(n_entries - scroll_bot).." more below", C.dim), w).."\n")
         y = y + 1
     end
 
@@ -1282,16 +1301,16 @@ render_catalog = function(entries, cursor, selections, scroll, msg, root_ok)
 
     local b1_active = cursor == (n_entries + BTN_DOWNLOAD)
     item_box(pad_c(col("[+]", b1_active and C.success or C.muted, C.bold).."  "
-        ..col("Download + install selected", b1_active and C.success or C.text), w-8), b1_active, b1_active and C.success or C.border)
+        ..col("Download/install selected", b1_active and C.success or C.text), w-8), b1_active, b1_active and C.success or C.border)
     add_click_region(y, y+2, "btn", BTN_DOWNLOAD); y = y + 3
 
     local b2_active = cursor == (n_entries + BTN_BACK)
-    item_box(pad_c(col("[←]", b2_active and C.danger or C.muted, C.bold).."  "
+    item_box(pad_c(col("[-]", b2_active and C.danger or C.muted, C.bold).."  "
         ..col("Go back", b2_active and C.danger or C.muted), w-8), b2_active, b2_active and C.danger or C.border)
     add_click_region(y, y+2, "btn", BTN_BACK)
 
-    footer_line("Root install flow", "download → install if selected → delete")
-    hint_bar({ {"↑↓","move"}, {"Space/Enter","choose"}, {"A","all"}, {"Q","back"} })
+    footer_line("Root cycle", "download > install > delete")
+    hint_bar({ {"Up/Down","move"}, {"Space/Enter","choose"}, {"A","all"}, {"D/Q","run/back"} })
 end
 
 run_catalog = function(hwid, lbl)
@@ -1376,9 +1395,18 @@ run_catalog = function(hwid, lbl)
         elseif key == "A" then
             local target = count_selected(selections) ~= #items
             for i = 1, #items do selections[i] = target end
+        elseif key == "D" then
+            local rc = do_download()
+            if rc then return leave(rc) end
         elseif key == "ENTER" then
             if cursor <= n_entries then
                 selections[cursor] = not selections[cursor]
+                if cursor < n_entries then
+                    cursor = cursor + 1
+                    if cursor > scroll + math.max(4, th() - 30) - 1 then
+                        scroll = scroll + 1
+                    end
+                end
             elseif cursor == (n_entries + BTN_DOWNLOAD) then
                 local rc = do_download()
                 if rc then return leave(rc) end
@@ -1421,8 +1449,8 @@ local function render_main_menu(cursor, notice)
 
     local session_rows = {
         col("Device:", C.muted).."  "..col(short(DEVICE_LABEL, 36), C.text),
-        col("Status:", C.muted).."  "..col("● Online", C.success),
-        col("Build:",  C.muted).."  "..col("v1.0  ·  Lifetime", C.muted),
+        col("Status:", C.muted).."  "..col("[OK] Online", C.success),
+        col("Build:",  C.muted).."  "..col("v1.0  |  Lifetime", C.muted),
     }
     info_card(session_rows, C.border_mid)
     y = y + 4
@@ -1453,8 +1481,8 @@ local function render_main_menu(cursor, notice)
     )
     add_click_region(y, y+2, "main_exit", exit_idx)
 
-    footer_line("discord.gg/HQtp9fVqZT", "v1.0  ·  Lifetime Session")
-    hint_bar({ {"↑↓","navigate"}, {"Enter","select"}, {"Q","quit"} })
+    footer_line("discord.gg/HQtp9fVqZT", "v1.0  |  Lifetime Session")
+    hint_bar({ {"Up/Down","navigate"}, {"Enter","select"}, {"Q","quit"} })
 end
 
 local function run_main_menu(hwid, lbl)
