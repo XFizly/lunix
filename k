@@ -482,7 +482,7 @@ local function draw_header(step)
 
     -- Tagline
     local tag = paint("▸ ", C.bdr_mid)
-              .. paint("S E C U R E   ·   V E R I F I E D   ·   A U T H E N T I C A T E D", C.coal)
+              .. paint("L U N E X   ·   L I T E  C L O N E S   ·   V E R S I O N 1.0.0", C.coal)
               .. paint(" ◂", C.bdr_mid)
     io.write(center_col(tag, w) .. "\n\n")
 
@@ -818,7 +818,7 @@ local function main()
                         local vstatus = validate_code(lk, code, hwid, device_label)
 
                         if vstatus == "server" then
-                            show_status_screen("Unavailable", "Cannot reach the server. Try again later.", "err"); return
+                            show_status_screen("Unavailable", "Cannot reach the server. Try again later, or contact me!", "err"); return
                         end
                         if vstatus == "valid" then
                             save_license(lk, hwid, device_label)
