@@ -1223,7 +1223,7 @@ end
 local BTN_DOWNLOAD = 1
 local BTN_BACK = 2
 
-render_catalog = function(entries, cursor, selections, msg, root_ok)
+render_catalog = function(entries, cursor, selections, scroll, msg, root_ok)
     clear(); draw_header("Clones Catalog")
     reset_click_regions()
     local w = tw()
@@ -1350,7 +1350,7 @@ run_catalog = function(hwid, lbl)
     end
 
     while true do
-        render_catalog(items, cursor, selections, msg, root_ok)
+        render_catalog(items, cursor, selections, scroll, msg, root_ok)
         msg = nil
         local key = read_key()
         local n_entries = #items
