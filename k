@@ -7,15 +7,17 @@ exec lua5.4 "$0" "$@"
 ]]
 math.randomseed(os.time())
 
--- Load main config
-local HOME = os.getenv("HOME") or "/data/data/com.termux/files/home"
-local IS_WINDOWS = package.config:sub(1, 1) == "\\"
-local NULL_DEVICE = IS_WINDOWS and "NUL" or "/dev/null"
-local TEMP_ROOT = IS_WINDOWS
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Config
+-- ─────────────────────────────────────────────────────────────────────────────
+local HOME           = os.getenv("HOME") or "/data/data/com.termux/files/home"
+local IS_WIN         = package.config:sub(1, 1) == "\\"
+local DEVNULL        = IS_WIN and "NUL" or "/dev/null"
+local TEMP_ROOT      = IS_WIN
     and (os.getenv("TEMP") or os.getenv("TMP") or ".")
-    or (os.getenv("TMPDIR") or (HOME .. "/.lunex-tmp"))
-local LUNEX_ROOT = HOME .. "/lunex"
-local LICENSE_PATH = LUNEX_ROOT .. "/license_key.json"
+    or  (os.getenv("TMPDIR") or HOME .. "/.lunex-tmp")
+local LUNEX_ROOT     = HOME .. "/lunex"
+local LICENSE_PATH   = LUNEX_ROOT .. "/license_key.json"
 local LUNEX_TOOL_API = "0324241241241:https://lunex-termux-api.vercel.app:lunextool:R9p4K2m8Qx6Z1v3N"
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -23,478 +25,597 @@ local LUNEX_TOOL_API = "0324241241241:https://lunex-termux-api.vercel.app:lunext
 -- ─────────────────────────────────────────────────────────────────────────────
 local json = {}
 
-local function json_encode(value)
-    local value_type = type(value)
-    if value_type == "nil" then return "null" end
-    if value_type == "boolean" then return value and "true" or "false" end
-    if value_type == "number" then
-        return value ~= value and "null" or ("%.14g"):format(value)
+local function json_encode(v)
+    local t = type(v)
+    if t == "nil"     then return "null" end
+    if t == "boolean" then return v and "true" or "false" end
+    if t == "number"  then return v ~= v and "null" or ("%.14g"):format(v) end
+    if t == "string"  then
+        return '"' .. v:gsub('[\\"]', function(c) return "\\" .. c end)
+                      :gsub("\n","\\n"):gsub("\r","\\r"):gsub("\t","\\t") .. '"'
     end
-    if value_type == "string" then
-        return '"' .. value
-            :gsub('[\\"]', function(char) return "\\" .. char end)
-            :gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t") .. '"'
-    end
-    if value_type == "table" then
-        local is_array = #value > 0
-        if is_array then
-            for index = 1, #value do
-                if value[index] == nil then is_array = false; break end
-            end
+    if t == "table" then
+        local arr = #v > 0
+        if arr then
+            for i = 1, #v do if v[i] == nil then arr = false; break end end
         end
-        local parts = {}
-        if is_array then
-            for _, item in ipairs(value) do parts[#parts + 1] = json_encode(item) end
-            return "[" .. table.concat(parts, ",") .. "]"
+        local p = {}
+        if arr then
+            for _, x in ipairs(v) do p[#p+1] = json_encode(x) end
+            return "[" .. table.concat(p, ",") .. "]"
         end
-        for key, item in pairs(value) do
-            parts[#parts + 1] = json_encode(tostring(key)) .. ":" .. json_encode(item)
+        for k, x in pairs(v) do
+            p[#p+1] = json_encode(tostring(k)) .. ":" .. json_encode(x)
         end
-        return "{" .. table.concat(parts, ",") .. "}"
+        return "{" .. table.concat(p, ",") .. "}"
     end
     return "null"
 end
 
-local function json_skip(raw, index)
-    while index <= #raw do
-        local byte = raw:byte(index)
-        if byte ~= 32 and byte ~= 9 and byte ~= 10 and byte ~= 13 then break end
-        index = index + 1
+local function jskip(s, i)
+    while i <= #s do
+        local b = s:byte(i)
+        if b ~= 32 and b ~= 9 and b ~= 10 and b ~= 13 then break end
+        i = i + 1
     end
-    return index
+    return i
 end
 
-local json_value
+local jval
 
-local function json_string(raw, index)
-    local parts = {}
-    local cursor = index + 1
-    while cursor <= #raw do
-        local char = raw:sub(cursor, cursor)
-        if char == '"' then return table.concat(parts), cursor + 1 end
-        if char == "\\" then
-            cursor = cursor + 1
-            local escaped = raw:sub(cursor, cursor)
-            if escaped == '"' then parts[#parts + 1] = '"'
-            elseif escaped == "\\" then parts[#parts + 1] = "\\"
-            elseif escaped == "n" then parts[#parts + 1] = "\n"
-            elseif escaped == "r" then parts[#parts + 1] = "\r"
-            elseif escaped == "t" then parts[#parts + 1] = "\t"
-            elseif escaped == "u" then
-                local code = tonumber(raw:sub(cursor + 1, cursor + 4), 16) or 63
-                parts[#parts + 1] = code < 128 and string.char(code) or "?"
-                cursor = cursor + 4
-            else parts[#parts + 1] = escaped end
-        else parts[#parts + 1] = char end
-        cursor = cursor + 1
+local function jstr(s, i)
+    local p, c = {}, i + 1
+    while c <= #s do
+        local ch = s:sub(c, c)
+        if ch == '"' then return table.concat(p), c + 1 end
+        if ch == "\\" then
+            c = c + 1; local e = s:sub(c, c)
+            if e == '"' then p[#p+1] = '"'
+            elseif e == "\\" then p[#p+1] = "\\"
+            elseif e == "n"  then p[#p+1] = "\n"
+            elseif e == "r"  then p[#p+1] = "\r"
+            elseif e == "t"  then p[#p+1] = "\t"
+            elseif e == "u"  then
+                local code = tonumber(s:sub(c+1, c+4), 16) or 63
+                p[#p+1] = code < 128 and string.char(code) or "?"
+                c = c + 4
+            else p[#p+1] = e end
+        else p[#p+1] = ch end
+        c = c + 1
     end
-    return table.concat(parts), cursor
+    return table.concat(p), c
 end
 
-local function json_array(raw, index)
-    local result = {}
-    index = json_skip(raw, index)
-    if raw:sub(index, index) == "]" then return result, index + 1 end
+local function jarr(s, i)
+    local r = {}; i = jskip(s, i)
+    if s:sub(i,i) == "]" then return r, i+1 end
     while true do
-        local item
-        item, index = json_value(raw, index)
-        result[#result + 1] = item
-        index = json_skip(raw, index)
-        local char = raw:sub(index, index)
-        if char == "]" then return result, index + 1 end
-        if char ~= "," then break end
-        index = index + 1
+        local x; x, i = jval(s, i); r[#r+1] = x
+        i = jskip(s, i)
+        local ch = s:sub(i,i)
+        if ch == "]" then return r, i+1 end
+        if ch ~= "," then break end
+        i = i + 1
     end
-    return result, index
+    return r, i
 end
 
-local function json_object(raw, index)
-    local result = {}
-    index = json_skip(raw, index)
-    if raw:sub(index, index) == "}" then return result, index + 1 end
+local function jobj(s, i)
+    local r = {}; i = jskip(s, i)
+    if s:sub(i,i) == "}" then return r, i+1 end
     while true do
-        index = json_skip(raw, index)
-        local key
-        key, index = json_string(raw, index)
-        index = json_skip(raw, index)
-        if raw:sub(index, index) ~= ":" then break end
-        index = index + 1
-        local item
-        item, index = json_value(raw, index)
-        result[key] = item
-        index = json_skip(raw, index)
-        local char = raw:sub(index, index)
-        if char == "}" then return result, index + 1 end
-        if char ~= "," then break end
-        index = index + 1
+        i = jskip(s, i)
+        local k; k, i = jstr(s, i)
+        i = jskip(s, i)
+        if s:sub(i,i) ~= ":" then break end
+        i = i + 1
+        local x; x, i = jval(s, i)
+        r[k] = x; i = jskip(s, i)
+        local ch = s:sub(i,i)
+        if ch == "}" then return r, i+1 end
+        if ch ~= "," then break end
+        i = i + 1
     end
-    return result, index
+    return r, i
 end
 
-json_value = function(raw, index)
-    index = json_skip(raw, index)
-    local char = raw:sub(index, index)
-    if char == '"' then return json_string(raw, index) end
-    if char == "[" then return json_array(raw, index + 1) end
-    if char == "{" then return json_object(raw, index + 1) end
-    if raw:sub(index, index + 3) == "true" then return true, index + 4 end
-    if raw:sub(index, index + 4) == "false" then return false, index + 5 end
-    if raw:sub(index, index + 3) == "null" then return nil, index + 4 end
-    local number = raw:match("^-?%d+%.?%d*[eE]?[+-]?%d*", index)
-    if number then return tonumber(number), index + #number end
-    return nil, index + 1
+jval = function(s, i)
+    i = jskip(s, i)
+    local ch = s:sub(i,i)
+    if ch == '"' then return jstr(s, i) end
+    if ch == '[' then return jarr(s, i+1) end
+    if ch == '{' then return jobj(s, i+1) end
+    if s:sub(i,i+3) == "true"  then return true,  i+4 end
+    if s:sub(i,i+4) == "false" then return false, i+5 end
+    if s:sub(i,i+3) == "null"  then return nil,   i+4 end
+    local n = s:match("^-?%d+%.?%d*[eE]?[+-]?%d*", i)
+    if n then return tonumber(n), i+#n end
+    return nil, i+1
 end
 
-function json.decode(raw)
-    if type(raw) ~= "string" or raw == "" then return nil end
-    local ok, parsed = pcall(json_value, raw, 1)
-    return ok and parsed or nil
+function json.decode(s)
+    if type(s) ~= "string" or s == "" then return nil end
+    local ok, r = pcall(jval, s, 1)
+    return ok and r or nil
 end
-
 json.encode = json_encode
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Core helpers
+-- Shell helpers
 -- ─────────────────────────────────────────────────────────────────────────────
-local function trim(value)
-    return tostring(value or ""):match("^%s*(.-)%s*$")
+local function trim(s) return tostring(s or ""):match("^%s*(.-)%s*$") end
+
+local function run_line(cmd)
+    local h = io.popen(cmd .. " 2>" .. DEVNULL)
+    if not h then return "" end
+    local o = trim(h:read("*l") or "")
+    h:close(); return o
 end
 
-local function shell_first_line(command)
-    local handle = io.popen(command .. " 2>" .. NULL_DEVICE)
-    if not handle then return "" end
-    local output = trim(handle:read("*l") or "")
-    handle:close()
-    return output
+local function run_all(cmd)
+    local h = io.popen(cmd .. " 2>" .. DEVNULL)
+    if not h then return "" end
+    local o = h:read("*a") or ""
+    h:close(); return o
 end
 
 local function make_dir(path)
-    if IS_WINDOWS then
-        os.execute('if not exist "' .. path .. '" mkdir "' .. path .. '" >' .. NULL_DEVICE .. ' 2>&1')
+    if IS_WIN then
+        os.execute('if not exist "' .. path .. '" mkdir "' .. path .. '" >' .. DEVNULL .. ' 2>&1')
         return
     end
-    os.execute("mkdir -p '" .. path:gsub("'", "'\\''") .. "' 2>" .. NULL_DEVICE)
+    os.execute("mkdir -p '" .. path:gsub("'", "'\\''") .. "' 2>" .. DEVNULL)
 end
 
 local function file_exists(path)
-    local handle = io.open(path, "r")
-    if handle then handle:close(); return true end
+    local h = io.open(path, "r")
+    if h then h:close(); return true end
     return false
 end
 
-local function temp_path(prefix)
-    local sep = IS_WINDOWS and "\\" or "/"
-    return TEMP_ROOT .. sep .. prefix .. "_" .. math.random(999999) .. ".tmp"
+local function shell_escape(s)
+    if IS_WIN then return '"' .. tostring(s):gsub('"', '""') .. '"' end
+    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
 end
 
-local function terminal_width()
-    local width = tonumber(shell_first_line("tput cols"))
-    return math.max(60, width or 80)
+local function temp_path(pfx)
+    return TEMP_ROOT .. (IS_WIN and "\\" or "/") .. pfx .. "_" .. math.random(999999) .. ".tmp"
+end
+
+local function cmd_exists(c) return run_line("command -v " .. c) ~= "" end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- ANSI / UTF-8  WIDTH  SYSTEM
+--
+--   THE KEY FIX:  Lua's # operator counts *bytes*, not terminal columns.
+--   ANSI escape sequences are multi-byte but 0 columns wide.
+--   UTF-8 multi-byte chars are 2-4 bytes but typically 1 column wide.
+--   This system always measures in *terminal columns*, never raw bytes.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Strip all ANSI/VT escape sequences from a string.
+local function strip_ansi(s)
+    -- Matches ESC [ ... m  (CSI sequences used for color/style)
+    -- and ESC [ ... H/J/K  (cursor movement — just in case)
+    return (tostring(s or "")):gsub("\27%[[%d;:]*[A-Za-z]", "")
+end
+
+-- Count the number of terminal *columns* a string occupies.
+-- Handles: ANSI escape codes (0 columns), multi-byte UTF-8 (1 column per codepoint).
+-- Note: CJK wide chars are 2 columns in real terminals; we don't handle them here
+-- because our content never contains them.  Everything we render is 1 col/codepoint.
+local function col_width(s)
+    local clean = strip_ansi(tostring(s or ""))
+    local w, i  = 0, 1
+    while i <= #clean do
+        local b = clean:byte(i)
+        -- Count one column per codepoint, skip continuation bytes
+        w = w + 1
+        if     b >= 0xF0 then i = i + 4   -- 4-byte sequence
+        elseif b >= 0xE0 then i = i + 3   -- 3-byte sequence  (box-drawing, block glyphs)
+        elseif b >= 0xC0 then i = i + 2   -- 2-byte sequence
+        else                   i = i + 1  -- ASCII
+        end
+    end
+    return w
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Color / paint system  (256-color + true-color gradient palette)
+-- Colors
 -- ─────────────────────────────────────────────────────────────────────────────
-local ESC = "\27["
-local RST = ESC .. "0m"
+local E = "\27["
+local R = E .. "0m"
 
-local function c256(n)   return ESC .. "38;5;" .. n .. "m" end
-local function c256bg(n) return ESC .. "48;5;" .. n .. "m" end
-local function rgb(r, g, b) return ESC .. "38;2;" .. r .. ";" .. g .. ";" .. b .. "m" end
+local function tc(r, g, b) return E .. "38;2;" .. r .. ";" .. g .. ";" .. b .. "m" end
+local function bc(r, g, b) return E .. "48;2;" .. r .. ";" .. g .. ";" .. b .. "m" end
+local BOLD   = E .. "1m"
+local DIM    = E .. "2m"
+local ITALIC = E .. "3m"
 
-local UI = {
-    reset   = RST,
-    bold    = ESC .. "1m",
-    dim     = ESC .. "2m",
-    -- Blues / cyans (brand palette)
-    brand1  = rgb(80,  160, 255),   -- bright sky blue
-    brand2  = rgb(60,  130, 230),
-    brand3  = rgb(40,  100, 200),
-    brand4  = rgb(30,   80, 175),
-    brand5  = rgb(20,   60, 150),
-    brand6  = rgb(15,   45, 125),
-    -- Accents
-    cyan    = rgb(0,   210, 255),
-    teal    = rgb(0,   200, 190),
+-- Wrap text in ANSI color codes, always reset after.
+local function paint(text, ...)
+    local codes = table.concat({ ... })
+    if codes == "" then return tostring(text or "") end
+    return codes .. tostring(text or "") .. R
+end
+
+local C = {
+    -- Brand blues (logo gradient, top → bottom)
+    b1 = tc(110, 185, 255),
+    b2 = tc( 75, 150, 245),
+    b3 = tc( 50, 120, 225),
+    b4 = tc( 35,  95, 200),
+    b5 = tc( 22,  68, 168),
+    b6 = tc( 14,  47, 130),
+
+    -- Accent spectrum
+    cyan   = tc(  0, 218, 255),
+    teal   = tc(  0, 200, 178),
+    violet = tc(150, 110, 255),
+    gold   = tc(255, 198,  48),
+
     -- Neutrals
-    white   = c256(255),
-    silver  = c256(252),
-    ash     = c256(245),
-    slate   = c256(240),
-    dim_fg  = c256(238),
+    white   = tc(238, 244, 255),
+    silver  = tc(195, 208, 228),
+    ash     = tc(148, 162, 182),
+    slate   = tc( 96, 112, 136),
+    coal    = tc( 54,  64,  82),
+
     -- Semantic
-    success = rgb(80,  220, 130),
-    warning = rgb(255, 200,  60),
-    danger  = rgb(255,  90,  90),
-    muted   = c256(109),
-    -- Box chrome
-    border  = rgb(55,  80, 130),
-    border2 = rgb(70, 100, 160),
+    ok   = tc( 66, 220, 118),
+    warn = tc(255, 188,  48),
+    err  = tc(255,  70,  70),
+
+    -- Border shades (for boxes)
+    bdr_lo  = tc( 36,  56, 106),
+    bdr_mid = tc( 52,  82, 148),
+    bdr_hi  = tc( 78, 118, 200),
+    bdr_ok  = tc( 28, 138,  66),
+    bdr_err = tc(136,  28,  28),
+    bdr_wrn = tc(138, 100,  18),
 }
 
-local function paint(text, ...)
-    return table.concat({ ... }) .. tostring(text or "") .. RST
-end
-
 -- ─────────────────────────────────────────────────────────────────────────────
--- Terminal helpers
+-- Layout helpers  (all column-aware via col_width)
 -- ─────────────────────────────────────────────────────────────────────────────
-local function clear_screen()
-    if IS_WINDOWS then os.execute("cls >" .. NULL_DEVICE .. " 2>&1") end
-    io.write("\027[3J\027[2J\027[H")
-    io.flush()
+local function term_cols()
+    return math.max(60, tonumber(run_line("tput cols")) or 80)
 end
 
-local function pad_right(text, width)
-    local s = tostring(text or "")
-    if #s >= width then return s:sub(1, width) end
-    return s .. string.rep(" ", width - #s)
+-- Pad/trim a string to exactly `w` terminal columns.
+-- Preserves ANSI codes; padding is via plain spaces appended after the content.
+local function pad_col(s, w)
+    s = tostring(s or "")
+    local cw = col_width(s)
+    if cw >= w then return s end          -- never truncate; caller must pass safe content
+    return s .. string.rep(" ", w - cw)
 end
 
-local function center(text, width)
-    local s = tostring(text or "")
-    local pad = math.max(0, width - #s)
+-- Center a string (which may contain ANSI codes) within `w` columns.
+local function center_col(s, w)
+    local cw  = col_width(tostring(s or ""))
+    local pad = math.max(0, w - cw)
     return string.rep(" ", math.floor(pad / 2)) .. s .. string.rep(" ", math.ceil(pad / 2))
 end
 
+-- Truncate plain text to at most `w` visual columns, appending "…".
+local function trunc_plain(s, w)
+    s = strip_ansi(tostring(s or ""))
+    if col_width(s) <= w then return s end
+    -- Walk byte-by-byte counting codepoints until we reach w-1 columns
+    local out, cw, i = {}, 0, 1
+    while i <= #s and cw < w - 1 do
+        local b     = s:byte(i)
+        local bytes = b >= 0xF0 and 4 or b >= 0xE0 and 3 or b >= 0xC0 and 2 or 1
+        out[#out+1] = s:sub(i, i + bytes - 1)
+        cw = cw + 1
+        i  = i + bytes
+    end
+    return table.concat(out) .. "…"
+end
+
 -- ─────────────────────────────────────────────────────────────────────────────
--- Logo  –  new gradient block-letter banner
+-- Logo  (toilet → figlet → built-in block-letter fallback)
+--
+--   Install in Termux for best results:
+--     pkg install toilet figlet
+--     pip install lolcat    OR    pkg install ruby && gem install lolcat
 -- ─────────────────────────────────────────────────────────────────────────────
--- Each row gets a slightly different blue shade to fake a top→bottom gradient.
-local LOGO_ROWS = {
-    { color = UI.brand1,
-      text = "  ██╗     ██╗   ██╗███╗  ██╗███████╗██╗  ██╗" },
-    { color = UI.brand2,
-      text = "  ██║     ██║   ██║████╗ ██║██╔════╝╚██╗██╔╝" },
-    { color = UI.brand3,
-      text = "  ██║     ██║   ██║██╔██╗██║█████╗   ╚███╔╝ " },
-    { color = UI.brand4,
-      text = "  ██║     ██║   ██║██║╚████║██╔══╝   ██╔██╗ " },
-    { color = UI.brand5,
-      text = "  ███████╗╚██████╔╝██║ ╚███║███████╗██╔╝╚██╗" },
-    { color = UI.brand6,
-      text = "  ╚══════╝ ╚═════╝ ╚═╝  ╚══╝╚══════╝╚═╝  ╚═╝" },
+local BUILTIN_LOGO = {
+    { C.b1, "  ██╗     ██╗   ██╗███╗  ██╗███████╗██╗  ██╗" },
+    { C.b2, "  ██║     ██║   ██║████╗ ██║██╔════╝╚██╗██╔╝" },
+    { C.b3, "  ██║     ██║   ██║██╔██╗██║█████╗   ╚███╔╝ " },
+    { C.b4, "  ██║     ██║   ██║██║╚████║██╔══╝   ██╔██╗ " },
+    { C.b5, "  ███████╗╚██████╔╝██║ ╚███║███████╗██╔╝╚██╗" },
+    { C.b6, "  ╚══════╝ ╚═════╝ ╚═╝  ╚══╝╚══════╝╚═╝  ╚═╝" },
 }
 
-local TAGLINE = "  Secure · Verified · Authenticated"
+local function split_lines(s)
+    local lines = {}
+    for ln in (s .. "\n"):gmatch("([^\n]*)\n") do lines[#lines+1] = ln end
+    while #lines > 0 and not lines[#lines]:match("%S") do lines[#lines] = nil end
+    return lines
+end
+
+local LOGO_CACHE, LOGO_PRE_COLORED = nil, false
+
+local function build_logo_cache()
+    -- 1. toilet  (Termux: pkg install toilet)
+    if cmd_exists("toilet") then
+        for _, font in ipairs({ "mono9", "smblock", "bigmono9", "smmono9" }) do
+            local out = run_all("toilet -f " .. font .. " -w 120 LUNEX")
+            if out:match("%S") then
+                local lines = split_lines(out)
+                if #lines >= 3 then
+                    -- Try lolcat rainbow over toilet output
+                    if cmd_exists("lolcat") then
+                        local p = temp_path("lunex_logo")
+                        local f = io.open(p, "w")
+                        if f then
+                            f:write(table.concat(lines, "\n") .. "\n"); f:close()
+                            local colored = run_all("lolcat -f " .. shell_escape(p))
+                            os.remove(p)
+                            if colored:match("%S") then
+                                LOGO_CACHE      = split_lines(colored)
+                                LOGO_PRE_COLORED = true
+                                return
+                            end
+                        end
+                    end
+                    LOGO_CACHE      = lines
+                    LOGO_PRE_COLORED = false
+                    return
+                end
+            end
+        end
+    end
+
+    -- 2. figlet  (Termux: pkg install figlet)
+    if cmd_exists("figlet") then
+        for _, font in ipairs({ "slant", "big", "standard", "banner3" }) do
+            local out = run_all("figlet -f " .. font .. " -w 120 LUNEX")
+            if out:match("%S") then
+                local lines = split_lines(out)
+                if #lines >= 3 then
+                    LOGO_CACHE      = lines
+                    LOGO_PRE_COLORED = false
+                    return
+                end
+            end
+        end
+    end
+
+    -- 3. Built-in block-letter fallback
+    LOGO_CACHE      = BUILTIN_LOGO
+    LOGO_PRE_COLORED = false
+end
+
+local function render_logo(w)
+    if not LOGO_CACHE then build_logo_cache() end
+    local colors = { C.b1, C.b2, C.b3, C.b4, C.b5, C.b6 }
+
+    if LOGO_PRE_COLORED then
+        -- lolcat already embedded ANSI codes; just center by stripped width
+        for _, line in ipairs(LOGO_CACHE) do
+            io.write(center_col(line, w) .. R .. "\n")
+        end
+    elseif type(LOGO_CACHE[1]) == "table" then
+        -- Built-in: each entry is { color, text }
+        for i, row in ipairs(LOGO_CACHE) do
+            local col = row[1] or colors[((i-1) % #colors) + 1]
+            io.write(center_col(paint(row[2], BOLD, col), w) .. "\n")
+        end
+    else
+        -- figlet/toilet plain text: apply our blue gradient
+        for i, line in ipairs(LOGO_CACHE) do
+            local col = colors[((i-1) % #colors) + 1]
+            io.write(center_col(paint(line, BOLD, col), w) .. "\n")
+        end
+    end
+end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Box drawing  –  Unicode double-line style
+-- Box drawing
 -- ─────────────────────────────────────────────────────────────────────────────
-local B = {
-    tl = "╔", tr = "╗", bl = "╚", br = "╝",
-    h  = "═", v  = "║",
-    ml = "╠", mr = "╣", mt = "╦", mb = "╩", mc = "╬",
-    -- thin variant for secondary boxes
-    tl2 = "┌", tr2 = "┐", bl2 = "└", br2 = "┘",
-    h2  = "─", v2  = "│",
-    ml2 = "├", mr2 = "┤",
+local BOX = {
+    -- double-line  (primary content panels)
+    D = { tl="╔", tr="╗", bl="╚", br="╝", h="═", v="║", sl="╠", sr="╣" },
+    -- single-line  (note/hint strips)
+    S = { tl="┌", tr="┐", bl="└", br="┘", h="─", v="│", sl="├", sr="┤" },
+    -- rounded      (soft secondary panels)
+    R = { tl="╭", tr="╮", bl="╰", br="╯", h="─", v="│", sl="├", sr="┤" },
 }
 
--- Draw a double-line box.  inner_w = usable columns inside the border walls.
-local function box_top(inner_w, title, bc)
-    bc = bc or UI.border
+-- Draw a complete box, writing directly to stdout.
+-- `inner`  : number of *terminal columns* between the two vertical walls
+-- `title`  : plain-text title (nil = no title gap in top border)
+-- `rows`   : list of strings (may contain ANSI codes)
+-- `bc`     : border color code string
+-- `bstyle` : "D", "S", or "R"
+-- `margin` : number of leading spaces before each line
+local function draw_box_raw(inner, title, rows, bc, bstyle, margin)
+    local b   = BOX[bstyle or "D"] or BOX.D
+    local pad = string.rep(" ", margin or 2)
+    bc = bc or C.bdr_mid
+
+    -- ── Top border ──────────────────────────────────────────────────────────
     local title_str = title and (" " .. title .. " ") or ""
-    local fill = math.max(0, inner_w - #title_str)
-    return paint(B.tl .. title_str .. string.rep(B.h, fill) .. B.tr, bc)
-end
+    -- title_str is always plain ASCII so col_width == #title_str, but use
+    -- col_width to stay correct if someone passes a Unicode title later.
+    local title_cw  = col_width(title_str)
+    local h_fill    = math.max(0, inner - title_cw)
+    io.write(pad .. paint(b.tl .. title_str .. string.rep(b.h, h_fill) .. b.tr, bc) .. "\n")
 
-local function box_row(inner_w, content, bc)
-    bc = bc or UI.border
-    return paint(B.v, bc) .. pad_right(content, inner_w) .. paint(B.v, bc)
-end
-
-local function box_sep(inner_w, bc)
-    bc = bc or UI.border
-    return paint(B.ml .. string.rep(B.h, inner_w) .. B.mr, bc)
-end
-
-local function box_bot(inner_w, bc)
-    bc = bc or UI.border
-    return paint(B.bl .. string.rep(B.h, inner_w) .. B.br, bc)
-end
-
--- High-level: render a named box with a list of lines, centered in terminal.
-local function draw_box(title, lines, bc, margin)
-    margin = margin or 2
-    local width = terminal_width()
-    local inner = math.max(30, math.min(width - margin * 2 - 2, 74))
-    local pad = string.rep(" ", margin)
-
-    io.write(pad .. box_top(inner, title, bc) .. "\n")
-    for _, line in ipairs(lines) do
-        io.write(pad .. box_row(inner, "  " .. tostring(line or ""), bc) .. "\n")
+    -- ── Content rows ─────────────────────────────────────────────────────────
+    for _, row in ipairs(rows) do
+        local content = tostring(row or "")
+        -- pad_col pads based on col_width (ANSI-aware, UTF-8-aware)
+        io.write(pad .. paint(b.v, bc) .. pad_col(content, inner) .. paint(b.v, bc) .. "\n")
     end
-    io.write(pad .. box_bot(inner, bc) .. "\n")
+
+    -- ── Bottom border ────────────────────────────────────────────────────────
+    io.write(pad .. paint(b.bl .. string.rep(b.h, inner) .. b.br, bc) .. "\n")
 end
 
--- Thin-line info strip (no title).
-local function draw_note_box(lines, margin)
-    margin = margin or 2
-    local width = terminal_width()
-    local inner = math.max(30, math.min(width - margin * 2 - 2, 74))
-    local pad = string.rep(" ", margin)
-    local bc = UI.dim_fg
-
-    io.write(pad .. paint(B.tl2 .. string.rep(B.h2, inner) .. B.tr2, bc) .. "\n")
-    for _, line in ipairs(lines) do
-        io.write(pad .. paint(B.v2, bc) .. pad_right("  " .. tostring(line or ""), inner) .. paint(B.v2, bc) .. "\n")
-    end
-    io.write(pad .. paint(B.bl2 .. string.rep(B.h2, inner) .. B.br2, bc) .. "\n")
+-- High-level wrapper that auto-calculates inner width from terminal.
+local function draw_box(title, rows, bc, bstyle, margin)
+    local w     = term_cols()
+    local m     = margin or 2
+    local inner = math.max(34, math.min(w - m * 2 - 2, 78))
+    draw_box_raw(inner, title, rows, bc, bstyle, m)
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Header
 -- ─────────────────────────────────────────────────────────────────────────────
-local function draw_header(subtitle)
-    local width = terminal_width()
+local function clear_screen()
+    if IS_WIN then os.execute("cls >" .. DEVNULL .. " 2>&1") end
+    io.write("\027[3J\027[2J\027[H"); io.flush()
+end
+
+local function draw_header(step)
+    local w = term_cols()
     clear_screen()
     io.write("\n")
-
-    -- Gradient logo
-    for _, row in ipairs(LOGO_ROWS) do
-        io.write(center(paint(row.text, UI.bold, row.color), width) .. "\n")
-    end
+    render_logo(w)
+    io.write("\n")
 
     -- Tagline
-    io.write(center(paint(TAGLINE, UI.muted), width) .. "\n")
-    io.write("\n")
+    local tag = paint("▸ ", C.bdr_mid)
+              .. paint("S E C U R E   ·   V E R I F I E D   ·   A U T H E N T I C A T E D", C.coal)
+              .. paint(" ◂", C.bdr_mid)
+    io.write(center_col(tag, w) .. "\n\n")
 
-    -- Thin rule under logo
-    local rule_w = math.min(width - 4, 62)
-    io.write(center(paint(string.rep("─", rule_w), UI.dim_fg), width) .. "\n")
+    -- Rule
+    local rule_w = math.min(w - 8, 66)
+    io.write(center_col(paint(string.rep("─", rule_w), C.bdr_lo), w) .. "\n")
 
-    -- Subtitle badge
-    if subtitle and subtitle ~= "" then
+    -- Step badge
+    if step and step ~= "" then
         io.write("\n")
-        local badge = "  " .. subtitle .. "  "
-        io.write(center(paint(badge, UI.cyan, UI.bold), width) .. "\n")
+        local badge = "  " .. step .. "  "
+        io.write(center_col(paint(badge, BOLD, C.cyan), w) .. "\n")
     end
-
     io.write("\n")
 end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Symbols
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Each symbol string has a specific col_width; keep them consistent so that
+--  content lines line up cleanly inside the box.
+local SYM = {
+    ok     = paint(" ✔ ", BOLD, C.ok),    -- 3 cols
+    err    = paint(" ✘ ", BOLD, C.err),   -- 3 cols
+    warn   = paint(" ⚠ ", BOLD, C.warn),  -- 3 cols
+    wait   = paint(" ◌ ", C.cyan),        -- 3 cols
+    info   = paint(" ◈ ", C.cyan),        -- 3 cols
+    bullet = paint(" • ", C.slate),       -- 3 cols
+    key    = paint(" ⬡ ", C.teal),        -- 3 cols
+    arrow  = paint(" › ", BOLD, C.b2),    -- 3 cols
+}
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Screen layouts
 -- ─────────────────────────────────────────────────────────────────────────────
-local ICON = {
-    key    = paint("⬡", UI.cyan),
-    code   = paint("⬡", UI.teal),
-    ok     = paint("✔", UI.success),
-    err    = paint("✘", UI.danger),
-    warn   = paint("⚠", UI.warning),
-    arrow  = paint("›", UI.brand2),
-    dot    = paint("•", UI.muted),
-    spin   = paint("◈", UI.cyan),
-}
+local function S(sym, text_parts)
+    -- Build a single row: sym  +  concatenated text parts  (already painted)
+    return sym .. table.concat(text_parts)
+end
 
-local function show_license_screen(message)
-    draw_header("License Authentication")
-
-    local is_err = message and message ~= "Waiting for license key."
-    local msg_icon = is_err and ICON.warn or ICON.spin
-    local msg_color = is_err and UI.warning or UI.silver
-
-    draw_box("  License Key  ", {
+local function show_license_screen(notice)
+    local problem = notice and notice ~= "Waiting for license key."
+    draw_header("LICENSE AUTHENTICATION")
+    draw_box(" License Key ", {
         "",
-        "  " .. paint("Enter your license key to continue.", UI.white, UI.bold),
+        S(SYM.key,  { paint("Enter your license key to continue.", BOLD, C.white) }),
         "",
-        "  " .. ICON.dot .. "  " .. paint("Use ", UI.muted) ..
-            paint("/key_information", UI.cyan, UI.bold) ..
-            paint(" in the Discord bot if needed.", UI.muted),
-        "  " .. ICON.dot .. "  " .. paint("Paste the license key at the prompt below.", UI.muted),
+        S(SYM.bullet, { paint("Use ", C.ash), paint("/key_information", BOLD, C.cyan), paint(" in the Discord bot.", C.ash) }),
+        S(SYM.bullet, { paint("Paste the key at the prompt below.", C.ash) }),
         "",
-        "  " .. msg_icon .. "  " .. paint(message or "Waiting for license key.", msg_color),
+        S(problem and SYM.warn or SYM.wait,
+          { paint(notice or "Waiting for license key.", problem and C.warn or C.silver) }),
         "",
-    }, UI.border)
+    }, C.bdr_mid, "D")
 
     io.write("\n")
 
-    draw_note_box({
-        "  " .. ICON.dot .. "  " .. paint("Saved sessions are verified automatically on startup.", UI.muted),
-        "  " .. ICON.dot .. "  " .. paint("If auto-login fails, enter your license key again.", UI.muted),
-    })
+    draw_box(nil, {
+        S(SYM.bullet, { paint("Saved sessions are checked automatically on startup.", C.slate) }),
+        S(SYM.bullet, { paint("If auto-login fails, re-enter your license key.", C.slate) }),
+    }, C.bdr_lo, "R")
 
     io.write("\n")
 end
 
-local function show_code_screen(device_label, message)
-    draw_header("Device Verification")
-
-    local is_err = message and message ~= "Waiting for Termux code."
-    local msg_icon = is_err and ICON.warn or ICON.spin
-    local msg_color = is_err and UI.warning or UI.silver
-
-    local truncated = #(device_label or "") > 52
-        and (device_label:sub(1, 49) .. "...") or (device_label or "Unknown")
-
-    draw_box("  Termux Code  ", {
+local function show_code_screen(device_label, notice)
+    local problem = notice and notice ~= "Waiting for Termux code."
+    draw_header("DEVICE VERIFICATION")
+    draw_box(" Termux Code ", {
         "",
-        "  " .. paint("Device  ", UI.muted) ..
-            paint(truncated, UI.white, UI.bold),
+        S(SYM.key,  { paint("Device  ", C.ash), paint(trunc_plain(device_label or "Unknown", 54), BOLD, C.white) }),
         "",
-        "  " .. ICON.dot .. "  " .. paint("Run ", UI.muted) ..
-            paint("/get-termux-code", UI.cyan, UI.bold) ..
-            paint(" in the Discord bot.", UI.muted),
-        "  " .. ICON.dot .. "  " .. paint("Paste the code sent to your DMs.", UI.muted),
+        S(SYM.bullet, { paint("Run ", C.ash), paint("/get-termux-code", BOLD, C.cyan), paint(" in the Discord bot.", C.ash) }),
+        S(SYM.bullet, { paint("Paste the code sent to your DMs.", C.ash) }),
         "",
-        "  " .. msg_icon .. "  " .. paint(message or "Waiting for Termux code.", msg_color),
+        S(problem and SYM.warn or SYM.wait,
+          { paint(notice or "Waiting for Termux code.", problem and C.warn or C.silver) }),
         "",
-    }, UI.border)
+    }, C.bdr_mid, "D")
 
     io.write("\n")
 
-    draw_note_box({
-        "  " .. ICON.dot .. "  " .. paint("The code is tied to this device HWID.", UI.muted),
-        "  " .. ICON.dot .. "  " .. paint("If the code expires, request a fresh one.", UI.muted),
-    })
+    draw_box(nil, {
+        S(SYM.bullet, { paint("This code is tied to your device HWID.", C.slate) }),
+        S(SYM.bullet, { paint("If the code expires, run /get-termux-code again.", C.slate) }),
+    }, C.bdr_lo, "R")
 
     io.write("\n")
 end
 
-local function show_status_screen(title, message, tone)
-    draw_header(title)
+local function show_status_screen(title, message, kind)
+    -- kind: "ok" | "err" | "warn" | nil (info/default)
+    local icon = ({ ok=SYM.ok, err=SYM.err, warn=SYM.warn })[kind] or SYM.info
+    local bdr  = ({ ok=C.bdr_ok, err=C.bdr_err, warn=C.bdr_wrn })[kind] or C.bdr_hi
 
-    local bc = tone or UI.border2
-    local icon
-    if bc == UI.success then icon = ICON.ok
-    elseif bc == UI.danger then icon = ICON.err
-    else icon = ICON.spin end
-
-    draw_box("  " .. title .. "  ", {
+    draw_header(title:upper())
+    draw_box(" " .. title .. " ", {
         "",
-        "  " .. icon .. "  " .. paint(message or "", UI.white, UI.bold),
+        S(icon, { paint(message or "", BOLD, C.white) }),
         "",
-    }, bc)
-
+    }, bdr, "D")
     io.write("\n")
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Shell / crypto helpers
+-- Prompt
 -- ─────────────────────────────────────────────────────────────────────────────
-local function shell_escape(value)
-    if IS_WINDOWS then return '"' .. tostring(value):gsub('"', '""') .. '"' end
-    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+local function prompt(label)
+    io.write("\n" .. SYM.arrow .. paint(label, BOLD, C.white) .. "  " .. paint("▶  ", C.bdr_mid))
+    io.flush()
+    return trim(io.read("*l") or "")
 end
 
+local function print_success()
+    show_status_screen("Authenticated", "Verification complete. Welcome to Lunex.", "ok")
+    print("Success")
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Crypto  (SHA-256 via openssl / PowerShell)
+-- ─────────────────────────────────────────────────────────────────────────────
 local function sha256(value)
     local path = temp_path("lunex_sha")
-    local handle = io.open(path, "wb")
-    if not handle then return "" end
-    handle:write(value)
-    handle:close()
-
+    local h = io.open(path, "wb")
+    if not h then return "" end
+    h:write(value); h:close()
     local digest
-    if IS_WINDOWS then
-        digest = shell_first_line(
-            "powershell -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 " ..
+    if IS_WIN then
+        digest = run_line("powershell -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 " ..
             shell_escape(path) .. ").Hash\"")
     else
-        digest = shell_first_line(
-            "openssl dgst -sha256 < " .. shell_escape(path) .. " | awk '{print $NF}'")
+        digest = run_line("openssl dgst -sha256 < " .. shell_escape(path) .. " | awk '{print $NF}'")
     end
-
     os.remove(path)
     return trim(digest):lower()
 end
@@ -502,224 +623,145 @@ end
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Device fingerprint
 -- ─────────────────────────────────────────────────────────────────────────────
-local function getprop(name)
-    return shell_first_line("getprop " .. name)
-end
+local function getprop(n) return run_line("getprop " .. n) end
 
 local function device_identity()
-    local parts = {}
-    local captured = {}
-    local prop_names = {
-        "ro.serialno", "ro.boot.serialno",
-        "ro.product.manufacturer", "ro.product.brand",
-        "ro.product.model", "ro.product.device",
-        "ro.product.name", "ro.build.fingerprint", "ro.hardware",
+    local parts, captured = {}, {}
+    local props = {
+        "ro.serialno","ro.boot.serialno","ro.product.manufacturer",
+        "ro.product.brand","ro.product.model","ro.product.device",
+        "ro.product.name","ro.build.fingerprint","ro.hardware",
     }
-
-    local has_getprop = shell_first_line("command -v getprop") ~= ""
-    if has_getprop then
-        for _, name in ipairs(prop_names) do
-            local value = getprop(name)
-            if value ~= "" then
-                captured[name] = value
-                parts[#parts + 1] = name .. "=" .. value
-            end
+    if cmd_exists("getprop") then
+        for _, n in ipairs(props) do
+            local v = getprop(n)
+            if v ~= "" then captured[n] = v; parts[#parts+1] = n .. "=" .. v end
         end
     end
-
-    for _, id_path in ipairs({ "/etc/machine-id", "/var/lib/dbus/machine-id" }) do
-        local h = io.open(id_path, "r")
+    for _, p in ipairs({ "/etc/machine-id", "/var/lib/dbus/machine-id" }) do
+        local h = io.open(p, "r")
         if h then
-            local mid = trim(h:read("*l") or "")
-            h:close()
-            if mid ~= "" then parts[#parts + 1] = "machine-id=" .. mid end
+            local mid = trim(h:read("*l") or ""); h:close()
+            if mid ~= "" then parts[#parts+1] = "machine-id=" .. mid end
         end
     end
+    parts[#parts+1] = "node="    .. run_line("hostname")
+    parts[#parts+1] = "system="  .. run_line("uname -s")
+    parts[#parts+1] = "machine=" .. run_line("uname -m")
 
-    parts[#parts + 1] = "node="   .. shell_first_line("hostname")
-    parts[#parts + 1] = "system=" .. shell_first_line("uname -s")
-    parts[#parts + 1] = "machine=" .. shell_first_line("uname -m")
-
-    local digest = sha256(table.concat(parts, "\n")):upper()
-    local hwid = digest:sub(1, 32)
-
-    local manufacturer = captured["ro.product.manufacturer"]
-        or captured["ro.product.brand"]
-        or shell_first_line("uname -s")
-    local model = captured["ro.product.model"]
-        or captured["ro.product.device"]
-        or shell_first_line("hostname")
-        or "Device"
-
-    local label = ((manufacturer ~= "" and model ~= "") and (manufacturer .. " " .. model))
-        or (manufacturer ~= "" and manufacturer)
-        or (model ~= "" and model)
-        or "Unknown Device"
-
+    local hwid  = sha256(table.concat(parts, "\n")):upper():sub(1, 32)
+    local mfr   = captured["ro.product.manufacturer"] or captured["ro.product.brand"] or run_line("uname -s")
+    local model = captured["ro.product.model"] or captured["ro.product.device"] or run_line("hostname") or "Device"
+    local label = (mfr ~= "" and model ~= "") and (mfr .. " " .. model)
+                or (mfr ~= "" and mfr) or (model ~= "" and model) or "Unknown Device"
     return hwid, label:sub(1, 80)
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Local license storage
+-- License storage
 -- ─────────────────────────────────────────────────────────────────────────────
 local function load_saved_license()
     make_dir(LUNEX_ROOT)
     if not file_exists(LICENSE_PATH) then return nil end
-
     local h = io.open(LICENSE_PATH, "r")
     if not h then return nil end
-
-    local raw = h:read("*a")
-    h:close()
-
+    local raw = h:read("*a"); h:close()
     local parsed = json.decode(raw)
     if type(parsed) ~= "table" then os.remove(LICENSE_PATH); return nil end
-
-    local lk = trim(parsed.license_key or ""):gsub("%s", ""):upper()
+    local lk = trim(parsed.license_key or ""):gsub("%s",""):upper()
     if lk == "" then os.remove(LICENSE_PATH); return nil end
-
     return lk
 end
 
-local function save_license(license_key, hwid, device_label)
+local function save_license(lk, hwid, label)
     make_dir(LUNEX_ROOT)
     local h = io.open(LICENSE_PATH, "w")
     if not h then return end
-    h:write(json.encode({
-        license_key  = trim(license_key):gsub("%s", ""):upper(),
-        hwid         = hwid,
-        device_label = device_label,
-        saved_at     = os.time(),
-    }))
+    h:write(json.encode({ license_key=trim(lk):gsub("%s",""):upper(), hwid=hwid, device_label=label, saved_at=os.time() }))
     h:close()
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- API configuration
+-- HTTP  (curl)
 -- ─────────────────────────────────────────────────────────────────────────────
 local function parse_tool_api(spec)
-    local api_key, base_url, username, password =
-        spec:match("^([^:]+):(https?://.+):([^:]+):([^:]+)$")
-    if not api_key then error("Invalid LunexToolAPI format") end
-    return { key = api_key, base = base_url:gsub("/+$", ""), username = username, password = password }
+    local key, base, user, pass = spec:match("^([^:]+):(https?://.+):([^:]+):([^:]+)$")
+    if not key then error("Invalid LunexToolAPI format") end
+    return { key=key, base=base:gsub("/+$",""), username=user, password=pass }
 end
 
-local TOOL_API = parse_tool_api(LUNEX_TOOL_API)
+local API = parse_tool_api(LUNEX_TOOL_API)
 
-local function http_post_json(route, payload)
+local function http_post(route, payload)
     make_dir(TEMP_ROOT)
+    local rp = temp_path("lunex_resp")
+    local ep = temp_path("lunex_err")
+    local bp = temp_path("lunex_body")
 
-    local response_path = temp_path("lunex_response")
-    local error_path    = temp_path("lunex_error")
-    local body_path     = temp_path("lunex_body")
-
-    local bh = io.open(body_path, "wb")
+    local bh = io.open(bp, "wb")
     if not bh then return nil, { message = "Server unavailable." } end
-    bh:write(json.encode(payload))
-    bh:close()
+    bh:write(json.encode(payload)); bh:close()
 
-    local curl = IS_WINDOWS and "curl.exe" or "curl"
-    local cmd = table.concat({
+    local curl = IS_WIN and "curl.exe" or "curl"
+    local cmd  = table.concat({
         curl, "-sS", "--ipv4", "--http1.1",
-        "--connect-timeout", "10",
-        "--max-time", "20",
-        "--retry", "2",
-        "--retry-delay", "1",
-        "-u", shell_escape(TOOL_API.username .. ":" .. TOOL_API.password),
-        "-H", shell_escape("X-Lunex-Tool-Api-Key: " .. TOOL_API.key),
-        "-H", shell_escape("Accept: application/json"),
-        "-H", shell_escape("Content-Type: application/json"),
-        "-o", shell_escape(response_path),
-        "-w", shell_escape("%{http_code}"),
-        "-X", "POST",
-        "--data-binary", shell_escape("@" .. body_path),
-        shell_escape(TOOL_API.base .. route),
+        "--connect-timeout", "10", "--max-time", "20", "--retry", "2", "--retry-delay", "1",
+        "-u",  shell_escape(API.username .. ":" .. API.password),
+        "-H",  shell_escape("X-Lunex-Tool-Api-Key: " .. API.key),
+        "-H",  shell_escape("Accept: application/json"),
+        "-H",  shell_escape("Content-Type: application/json"),
+        "-o",  shell_escape(rp),
+        "-w",  shell_escape("%{http_code}"),
+        "-X",  "POST",
+        "--data-binary", shell_escape("@" .. bp),
+        shell_escape(API.base .. route),
     }, " ")
 
-    local process = io.popen(cmd .. " 2>" .. shell_escape(error_path))
-    local status_code = tonumber((process and process:read("*a") or "0"):match("%d+")) or 0
-    if process then process:close() end
+    local proc = io.popen(cmd .. " 2>" .. shell_escape(ep))
+    local sc   = tonumber((proc and proc:read("*a") or "0"):match("%d+")) or 0
+    if proc then proc:close() end
 
     local body = ""
-    local rh = io.open(response_path, "r")
+    local rh = io.open(rp, "r")
     if rh then body = rh:read("*a") or ""; rh:close() end
+    os.remove(rp); os.remove(ep); os.remove(bp)
 
-    os.remove(response_path)
-    os.remove(error_path)
-    os.remove(body_path)
-
-    if status_code == 0 then return nil, { message = "Server unavailable." } end
-
+    if sc == 0 then return nil, { message = "Server unavailable." } end
     local parsed = json.decode(body)
     if type(parsed) ~= "table" then parsed = {} end
-
-    return status_code, parsed
+    return sc, parsed
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Authentication API calls
+-- Auth calls
 -- ─────────────────────────────────────────────────────────────────────────────
-local function check_license(license_key)
-    local status_code, response = http_post_json("/api/termux/license-status", {
-        licenseKey = license_key,
-    })
-    if not status_code then return "server", response.message or "Server unavailable." end
-    if status_code == 200 then return "valid", response.message or "Valid." end
-    if (response.code or "") == "UNAUTHORIZED" or status_code >= 500 then
-        return "server", response.message or "Server unavailable."
-    end
-    return "invalid", response.message or "Invalid."
+local function check_license(lk)
+    local sc, r = http_post("/api/termux/license-status", { licenseKey = lk })
+    if not sc then return "server", r.message or "Server unavailable." end
+    if sc == 200 then return "valid", r.message or "Valid." end
+    if (r.code or "") == "UNAUTHORIZED" or sc >= 500 then return "server", r.message or "Server unavailable." end
+    return "invalid", r.message or "Invalid."
 end
 
-local function auto_login(license_key, hwid, device_label)
-    local status_code, response = http_post_json("/api/termux/auto-login", {
-        licenseKey = license_key,
-        hwid       = hwid,
-        hwidLabel  = device_label,
-    })
-    if not status_code then return "server", response.message or "Server unavailable." end
-    if status_code == 200 then return "valid", response.message or "Success" end
-    if (response.code or "") == "AUTO_LOGIN_FAILED" then
-        return "failed", response.message or "Auto login failed."
-    end
-    if (response.code or "") == "UNAUTHORIZED" or status_code >= 500 then
-        return "server", response.message or "Server unavailable."
-    end
-    return "invalid", response.message or "Invalid."
+local function auto_login(lk, hwid, label)
+    local sc, r = http_post("/api/termux/auto-login", { licenseKey=lk, hwid=hwid, hwidLabel=label })
+    if not sc then return "server", r.message or "Server unavailable." end
+    if sc == 200 then return "valid", r.message or "Success" end
+    if (r.code or "") == "AUTO_LOGIN_FAILED" then return "failed", r.message or "Auto login failed." end
+    if (r.code or "") == "UNAUTHORIZED" or sc >= 500 then return "server", r.message or "Server unavailable." end
+    return "invalid", r.message or "Invalid."
 end
 
-local function validate_code(license_key, termux_code, hwid, device_label)
-    local status_code, response = http_post_json("/api/termux/validate", {
-        licenseKey = license_key,
-        termuxCode = termux_code,
-        hwid       = hwid,
-        hwidLabel  = device_label,
-    })
-    if not status_code then return "server", response.message or "Server unavailable." end
-    if status_code == 200 then return "valid", response.message or "Success" end
-
-    local code = response.code or ""
-    if code == "INVALID_LICENSE"    then return "invalid_license",    response.message or "Invalid." end
-    if code == "EXPIRED"            then return "expired",            response.message or "Expired." end
-    if code == "HWID_LIMIT_REACHED" then return "hwid_limit_reached", response.message or "HWID limit reached." end
-    if code == "UNAUTHORIZED" or status_code >= 500 then
-        return "server", response.message or "Server unavailable."
-    end
-    return "invalid", response.message or "Invalid."
-end
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Prompt
--- ─────────────────────────────────────────────────────────────────────────────
-local function prompt(label)
-    io.write("\n  " .. paint("›", UI.cyan, UI.bold) .. "  " .. paint(label, UI.silver, UI.bold) .. "  ")
-    io.flush()
-    return trim(io.read("*l") or "")
-end
-
-local function print_success()
-    show_status_screen("Authenticated", "You are now verified. Welcome to Lunex.", UI.success)
-    print("Success")
+local function validate_code(lk, code, hwid, label)
+    local sc, r = http_post("/api/termux/validate", { licenseKey=lk, termuxCode=code, hwid=hwid, hwidLabel=label })
+    if not sc then return "server", r.message or "Server unavailable." end
+    if sc == 200 then return "valid", r.message or "Success" end
+    local rc = r.code or ""
+    if rc == "INVALID_LICENSE"    then return "invalid_license",    r.message or "Invalid." end
+    if rc == "EXPIRED"            then return "expired",            r.message or "Expired." end
+    if rc == "HWID_LIMIT_REACHED" then return "hwid_limit_reached", r.message or "HWID limit reached." end
+    if rc == "UNAUTHORIZED" or sc >= 500 then return "server", r.message or "Server unavailable." end
+    return "invalid", r.message or "Invalid."
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -730,74 +772,66 @@ local function main()
     make_dir(TEMP_ROOT)
 
     local hwid, device_label = device_identity()
-    local saved_license = load_saved_license()
-    local license_notice = "Waiting for license key."
+    local saved = load_saved_license()
+    local lic_notice = "Waiting for license key."
 
-    if saved_license then
-        show_status_screen("Authentication", "Verifying saved session...", UI.border2)
-        local status = auto_login(saved_license, hwid, device_label)
-        if status == "valid" then
-            print_success()
-            return
-        end
+    -- Try auto-login with saved key
+    if saved then
+        show_status_screen("Authentication", "Verifying saved session…", nil)
+        local status = auto_login(saved, hwid, device_label)
+        if status == "valid"  then print_success(); return end
         if status == "server" then
-            show_status_screen("Unavailable", "Could not reach the server. Try again later.", UI.danger)
-            return
+            show_status_screen("Unavailable", "Cannot reach the server. Try again later.", "err"); return
         end
         os.remove(LICENSE_PATH)
-        license_notice = "Saved session expired — enter your license key again."
+        lic_notice = "Saved session expired — please enter your license key again."
     end
 
+    -- License key loop
     while true do
-        show_license_screen(license_notice)
-        local license_key = prompt("License key"):upper()
+        show_license_screen(lic_notice)
+        local lk = prompt("License key"):upper()
 
-        if license_key == "" then
-            license_notice = "No license key provided."
+        if lk == "" then
+            lic_notice = "No license key entered. Please try again."
         else
-            show_status_screen("Authentication", "Verifying license key...", UI.border2)
-            local license_status = check_license(license_key)
+            show_status_screen("Authentication", "Verifying license key…", nil)
+            local lstatus = check_license(lk)
 
-            if license_status == "server" then
-                show_status_screen("Unavailable", "Could not reach the server. Try again later.", UI.danger)
-                return
+            if lstatus == "server" then
+                show_status_screen("Unavailable", "Cannot reach the server. Try again later.", "err"); return
             end
 
-            if license_status ~= "valid" then
-                license_notice = "That license key is not valid."
+            if lstatus ~= "valid" then
+                lic_notice = "That license key was not accepted."
             else
+                -- Code verification loop
                 local code_notice = "Waiting for Termux code."
-
                 while true do
                     show_code_screen(device_label, code_notice)
-                    local termux_code = prompt("Termux code"):upper()
+                    local code = prompt("Termux code"):upper()
 
-                    if termux_code == "" then
-                        code_notice = "No Termux code provided."
+                    if code == "" then
+                        code_notice = "No code entered. Please try again."
                     else
-                        show_status_screen("Verification", "Checking Termux code...", UI.border2)
-                        local validation_status = validate_code(license_key, termux_code, hwid, device_label)
+                        show_status_screen("Verification", "Checking Termux code…", nil)
+                        local vstatus = validate_code(lk, code, hwid, device_label)
 
-                        if validation_status == "server" then
-                            show_status_screen("Unavailable", "Could not reach the server. Try again later.", UI.danger)
-                            return
+                        if vstatus == "server" then
+                            show_status_screen("Unavailable", "Cannot reach the server. Try again later.", "err"); return
                         end
-
-                        if validation_status == "valid" then
-                            save_license(license_key, hwid, device_label)
-                            print_success()
-                            return
+                        if vstatus == "valid" then
+                            save_license(lk, hwid, device_label)
+                            print_success(); return
                         end
-
-                        if validation_status == "invalid_license" then
+                        if vstatus == "invalid_license" then
                             os.remove(LICENSE_PATH)
-                            license_notice = "License is no longer valid."
+                            lic_notice = "License is no longer valid."
                             break
                         end
-
-                        if validation_status == "expired" then
+                        if vstatus == "expired" then
                             code_notice = "Code expired — run /get-termux-code again."
-                        elseif validation_status == "hwid_limit_reached" then
+                        elseif vstatus == "hwid_limit_reached" then
                             code_notice = "HWID limit reached for this license."
                         else
                             code_notice = "That Termux code was not accepted."
@@ -811,7 +845,7 @@ end
 
 local ok, err = pcall(main)
 if not ok then
-    show_status_screen("Error", trim(err), UI.danger)
+    show_status_screen("Error", trim(err), "err")
     print(trim(err))
     os.exit(1)
 end
