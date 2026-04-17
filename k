@@ -109,8 +109,8 @@ local HOME       = os.getenv("HOME") or "/data/data/com.termux/files/home"
 local SDIR       = (arg[0] or ""):match("^(.+)/[^/]*$") or "."
 local LROOT      = HOME.."/lunex"
 local LIC_PATH   = LROOT.."/license_key.json"
-local DL_ROOT    = SDIR.."/downloads"
 local IS_WINDOWS = package.config:sub(1,1)=="\\"
+local DL_ROOT    = IS_WINDOWS and (SDIR.."/downloads/Lunex_Lite_clones") or "/storage/emulated/0/Download/Lunex_Lite_clones"
 local NULL_DEV   = IS_WINDOWS and "NUL" or "/dev/null"
 local TEMP_ROOT  = IS_WINDOWS
     and (os.getenv("TEMP") or os.getenv("TMP") or ".")
@@ -215,6 +215,7 @@ local function shl(cmd)
 end
 
 local function tw() return math.max(60, tonumber(shl("tput cols")) or 80) end
+local function th() return math.max(24, tonumber(shl("tput lines")) or 32) end
 
 local function strip(s) return (s:gsub("\027%[[%d;]*m","")) end
 local function vlen(s)  return #strip(s) end
@@ -442,7 +443,7 @@ local function mprog(pos, tot, seed)
     local w    = math.max(10, math.min(28, tw() - 36))
     local fill = math.max(0, math.min(w, math.floor((pos / math.max(1,tot)) * w + 0.5)))
     local bar  = col("["..string.rep("█",fill)..string.rep("░",w-fill).."]", C.accent)
-    prog("Installing", "Item "..pos.." / "..tot, bar.."  "..ACTS[(seed or 0) % ACTS_LEN + 1], "accent")
+    prog("Downloading", "Item "..pos.." / "..tot, bar.."  "..ACTS[(seed or 0) % ACTS_LEN + 1], "accent")
 end
 
 local function mdelay(pos, tot, seed, steps, delay)
@@ -808,79 +809,23 @@ local function dl_apk(sess,apk)
     return dest
 end
 
-local function inst_apk(path)
-    local function run_capture(cmd)
-        local f = io.popen(cmd .. " 2>&1")
-        local out = f and (f:read("*a") or "") or ""
-        local ok, reason, code = true, "exit", 0
-        if f then ok, reason, code = f:close() end
-        return ok, reason, code, sanitize_terminal_text(out, 220)
-    end
-
-    local function root_available()
-        if shl("command -v su") == "" then return false end
-        return shl("su -c id"):match("uid=0") ~= nil
-    end
-
-    local function stage_and_run(inner)
-        local staged = "/data/local/tmp/lunex_install_" .. math.random(999999) .. ".apk"
-        local script = "cp " .. esc(path) .. " " .. esc(staged)
-            .. " && chmod 644 " .. esc(staged)
-            .. " && " .. inner:gsub("$APK", esc(staged))
-            .. "; rc=$?; rm -f " .. esc(staged) .. "; exit $rc"
-        return "su -c " .. esc(script)
-    end
-
-    local tries = {}
-    if root_available() then
-        tries[#tries + 1] = stage_and_run("pm install -r $APK")
-        tries[#tries + 1] = stage_and_run("pm install -r --user 0 $APK")
-        tries[#tries + 1] = stage_and_run("cmd package install -r $APK")
-    end
-    if shl("command -v termux-open") ~= "" then
-        tries[#tries + 1] = "termux-open " .. esc(path)
-    end
-    if shl("command -v am") ~= "" then
-        tries[#tries + 1] = "am start -a android.intent.action.VIEW -d " .. esc("file://" .. path) .. " -t application/vnd.android.package-archive"
-    end
-    if shl("command -v pm") ~= "" then
-        tries[#tries + 1] = "pm install -r " .. esc(path)
-    end
-    if #tries == 0 then return false, "No package installer found." end
-
-    local last = "Install failed."
-    for _, cmd in ipairs(tries) do
-        local ok, _, _, out = run_capture(cmd)
-        if out:match("[Ss]uccess") or out:match("[Ii]nstaller opened") then
-            return true, out
-        end
-        if ok and (cmd:match("^termux%-open") or cmd:match("^am start")) then
-            return true, out ~= "" and out or "Installer opened."
-        end
-        if out ~= "" then
-            last = out
-        end
-    end
-    return false, last
-end
-
-local function install_selected(entries,idxs,sess)
-    local results,total={},#idxs
-    for pos,idx in ipairs(idxs) do
-        local apk=entries[idx]; mdelay(pos,total,pos*3)
+local function download_all_clones(entries,sess)
+    local results,total={},#entries
+    mkdirp(DL_ROOT)
+    for pos,apk in ipairs(entries) do
+        mdelay(pos,total,pos*3)
         local ok,out=false,"Download failed."
         local dOk,dR=pcall(dl_apk,sess,apk)
         if dOk then
-            mdelay(pos,total,pos*5)
-            local iOk,iSuc,iMsg=pcall(inst_apk,dR)
-            if iOk then ok=iSuc; out=sanitize_terminal_text(iMsg or (iSuc and "Success" or "Install failed."), 180)
-            else ok=false; out=sanitize_terminal_text(tostring(iSuc), 180) end
-            os.remove(dR)
-        else out=sanitize_terminal_text(tostring(dR), 180) end
-        mdelay(pos,total,pos*7,1,0.25)
+            ok=true
+            out=sanitize_terminal_text("Saved to "..dR, 180)
+        else
+            out=sanitize_terminal_text(tostring(dR), 180)
+        end
+        mdelay(pos,total,pos*5,1,0.25)
         results[#results+1]={apk.name,ok,out}
-        prog((ok and "Completed" or "Failed").." "..pos.."/"..total,sanitize_terminal_text(apk.name, 60),out,ok and "success" or "danger")
-        sleep(ok and 0.8 or 1.0)
+        prog((ok and "Downloaded" or "Download Failed").." "..pos.."/"..total,sanitize_terminal_text(apk.name, 60),out,ok and "success" or "danger")
+        sleep(ok and 0.7 or 1.0)
     end
     return results
 end
@@ -900,82 +845,76 @@ end
 -- ══════════════════════════════════════════════════════════════════
 --  Catalog screen  (per-item box rows)
 -- ══════════════════════════════════════════════════════════════════
-local function render_catalog(entries, sel_set, cursor, msg)
+local function render_catalog(entries, scroll, msg)
     clear(); draw_header("Clones Catalog")
-    reset_click_regions()
 
-    local w = tw()
-    local y = header_line_count("Clones Catalog")
-    -- Stats card
-    local sel_cnt, sel_sz, tot_sz = 0, 0, 0
-    for i, e in ipairs(entries) do
-        tot_sz = tot_sz + (e.size or 0)
-        if sel_set[i] then sel_cnt = sel_cnt + 1; sel_sz = sel_sz + (e.size or 0) end
-    end
-    info_card({
-        kv_inline("Device",    short(DEVICE_LABEL, 36), C.text),
-        kv_inline("Selected",  sel_cnt.."/"..#entries.."  ("..hsize(sel_sz)..")", C.accent),
-        kv_inline("Total size",hsize(tot_sz), C.muted),
-    }, C.border_mid)
-    y = y + box_height(nil, {
-        kv_inline("Device", short(DEVICE_LABEL, 36), C.text),
-        kv_inline("Selected", sel_cnt.."/"..#entries.."  ("..hsize(sel_sz)..")", C.accent),
-        kv_inline("Total size", hsize(tot_sz), C.muted),
-    })
+    local max_rows = math.max(4, th() - 24)
+    local start_at = math.max(1, math.min(scroll, math.max(1, #entries - max_rows + 1)))
+    local end_at = math.min(#entries, start_at + max_rows - 1)
+    local tot_sz = 0
+    for _, e in ipairs(entries) do tot_sz = tot_sz + (e.size or 0) end
+
     sp()
-    y = y + 1
+    info_card({
+        kv_inline("Folder", sanitize_terminal_text(DL_ROOT, 44), C.accent),
+        kv_inline("Files", tostring(#entries).."  ("..hsize(tot_sz)..")", C.text),
+        kv_inline("Action", "Enter downloads every clone", C.success),
+    }, C.border_mid)
+    sp()
+
+    info_card({
+        col("Go to "..DL_ROOT.." and install however many clones you want.", C.text),
+        col("The tool downloads every clone because files can expire later.", C.muted),
+        col("Saving them now gives the lowest chance of losing them later.", C.muted),
+    }, C.border)
+    sp()
 
     if msg then
         item_box(pad_c(col(tone_icon(msg[1]).."  "..msg[2], TONES[msg[1]] or C.muted, C.bold), tw() - 8), false, TONES[msg[1]])
-        y = y + 3
         sp()
-        y = y + 1
     end
 
-    -- File list rows
-    for i, e in ipairs(entries) do
-        local active  = cursor == i
-        local sel     = sel_set[i] == true
-        local marker  = sel and col("[x] ", C.success, C.bold) or col("[ ] ", C.muted)
-        local sz_str  = col(hsize(e.size), C.dim)
-        local name    = col(trunc(e.name, tw() - 18), active and C.accent or C.text_dim, active and C.bold or "")
-        local inner_w = tw() - 8
-        local left    = marker..name
-        local gap     = math.max(1, inner_w - vlen(marker) - vlen(name) - vlen(sz_str) - 1)
-        local content = left..string.rep(" ", gap)..sz_str
-        item_box(content, active, active and C.border_hi or (sel and C.border_mid or C.border))
-        add_click_region(y, y + 2, "catalog_item", i)
-        y = y + 3
+    local rows = {}
+    for i = start_at, end_at do
+        local e = entries[i]
+        local name = sanitize_terminal_text(e.name, tw() - 22)
+        local sz = col(hsize(e.size), C.dim)
+        rows[#rows + 1] = col(string.format("%02d", i), C.accent, C.bold).."  "..pad_r(col(name, C.text), math.max(18, tw() - 18 - vlen(sz)))..sz
     end
-    sp()
-    y = y + 1
+    if #rows == 0 then rows[1] = col("No clone files available.", C.dim) end
+    info_card(rows, C.border_mid)
 
-    -- Action rows
-    local base   = #entries + 1
-    local ia_dl  = cursor == base
-    local ia_bk  = cursor == base + 1
-    item_box(pad_c(col("[+]  Install selected clones", ia_dl and C.success or C.muted, ia_dl and C.bold or ""), tw() - 8), ia_dl, ia_dl and C.success or C.border)
-    add_click_region(y, y + 2, "catalog_action", 1)
-    y = y + 3
-    item_box(pad_c(col("[<]  Back to menu",            ia_bk and C.danger  or C.muted, ia_bk and C.bold or ""), tw() - 8), ia_bk, ia_bk and C.danger  or C.border)
-    add_click_region(y, y + 2, "catalog_action", 2)
+    if #entries > max_rows then
+        sp()
+        info_card({
+            kv_inline("Visible", start_at.." - "..end_at, C.text),
+            kv_inline("More", "Use ↑↓ to scroll the catalog", C.muted),
+        }, C.border)
+    end
 
-    hint_bar({ {"↑↓","move"}, {"Space","toggle"}, {"A","all"}, {"Enter","confirm"}, {"Q","back"} })
+    footer_line("Downloads only", "Open the folder after completion")
+    hint_bar({ {"↑↓","scroll"}, {"Enter","download all"}, {"Q","back"} })
 end
 
 local function render_summ(results)
-    clear(); draw_header("Install Summary")
+    clear(); draw_header("Download Summary")
     local ok_n, fail_n = 0, 0
     for _, r in ipairs(results) do if r[2] then ok_n=ok_n+1 else fail_n=fail_n+1 end end
     sp()
     info_card({
-        kv_inline("Successful", tostring(ok_n),   C.success),
-        kv_inline("Failed",     tostring(fail_n), fail_n > 0 and C.danger or C.muted),
+        kv_inline("Downloaded", tostring(ok_n), C.success),
+        kv_inline("Failed", tostring(fail_n), fail_n > 0 and C.danger or C.muted),
+        kv_inline("Folder", sanitize_terminal_text(DL_ROOT, 44), C.accent),
     }, C.border_mid)
+    sp()
+    info_card({
+        col("Go to "..DL_ROOT.." and install however many clones you want.", C.text),
+        col("Every clone was downloaded now because the files may expire later.", C.muted),
+    }, C.border)
     sp()
     for _, r in ipairs(results) do
         local ok   = r[2]
-        local icon = ok and col("[✔] ", C.success, C.bold) or col("[✖] ", C.danger, C.bold)
+        local icon = ok and col("[↓] ", C.success, C.bold) or col("[✖] ", C.danger, C.bold)
         local nm   = col(trunc(sanitize_terminal_text(r[1], tw() - 14), tw() - 14), ok and C.text or C.warning)
         item_box(icon..nm, false, ok and C.border_mid or C.border_err)
         if r[3] and r[3] ~= "" then
@@ -983,80 +922,44 @@ local function render_summ(results)
         end
     end
     sp()
-    item_box(pad_c(col("Press Enter to continue.", C.muted), tw() - 8), false, C.border)
+    item_box(pad_c(col("Press Enter to go back.", C.muted), tw() - 8), false, C.border)
     io.read("*l")
 end
 
 local function run_catalog(hwid, lbl)
     local msg = nil
-    prog("Loading", "Preparing clones catalog...", "Syncing package list...", "accent")
+    prog("Loading", "Preparing clones catalog...", "Refreshing package list...", "accent")
     local ok_s, sess, items = pcall(gf_new_session)
     if not ok_s then push_debug("CATALOG", tostring(sess)); show_error("Load Failed","Unable to fetch clone list."); return 1 end
     if #items == 0 then push_debug("CATALOG","empty"); show_error("Load Failed","No clones were found."); return 1 end
 
-    local sel_set, cursor = {}, 1
-    local total_rows = #items + 2
-    set_mouse_mode(true)
+    local max_rows = math.max(4, th() - 24)
+    local scroll = 1
+    set_mouse_mode(false)
 
-    local function leave(code)
-        set_mouse_mode(false)
-        return code
-    end
-
-    local function run_install_action()
-        local cnt = 0; for _ in pairs(sel_set) do cnt = cnt + 1 end
-        if cnt == 0 then msg = {"warning","Select at least one clone first."}; return nil end
+    local function run_download_action()
         local ast, amsg = ensure_access(hwid, lbl)
-        if ast == "server" then show_error("Access", amsg); return leave(2) end
-        if ast ~= "valid" then status_box("Access", amsg, "danger"); sleep(1); return leave(2) end
-        local idxs = {}
-        for i = 1, #items do if sel_set[i] then idxs[#idxs+1] = i end end
-        set_mouse_mode(false)
-        render_summ(install_selected(items, idxs, sess))
-        set_mouse_mode(true)
-        sel_set = {}
-        msg = {"success","Install run completed."}
+        if ast == "server" then show_error("Access", amsg); return 2 end
+        if ast ~= "valid" then status_box("Access", amsg, "danger"); sleep(1); return 2 end
+        render_summ(download_all_clones(items, sess))
+        msg = {"success","All clones were downloaded to "..DL_ROOT}
         return nil
     end
 
     while true do
-        render_catalog(items, sel_set, cursor, msg); msg = nil
+        render_catalog(items, scroll, msg); msg = nil
         local key = read_key()
-        local as  = #items + 1
 
-        if key == "UP"    then cursor = ((cursor - 2) % total_rows) + 1
-        elseif key == "DOWN"  then cursor = (cursor % total_rows) + 1
-        elseif key == "Q"     then return leave(0)
-        elseif key == "SPACE" then
-            if cursor <= #items then sel_set[cursor] = not sel_set[cursor] or nil end
-        elseif key == "A" then
-            local cnt = 0; for _ in pairs(sel_set) do cnt = cnt + 1 end
-            if cnt == #items then sel_set = {}
-            else for i = 1, #items do sel_set[i] = true end end
-        elseif key:match("^CLICK:") then
-            local click_y = tonumber(key:match("^CLICK:(%d+)$"))
-            local kind, value = resolve_click_region(click_y or -1)
-            if kind == "catalog_item" then
-                cursor = value
-                sel_set[cursor] = not sel_set[cursor] or nil
-            elseif kind == "catalog_action" then
-                cursor = #items + value
-                if value == 1 then
-                    local rc = run_install_action()
-                    if rc then return rc end
-                else
-                    return leave(0)
-                end
-            end
+        if key == "UP" then
+            scroll = math.max(1, scroll - 1)
+        elseif key == "DOWN" then
+            scroll = math.min(math.max(1, #items - max_rows + 1), scroll + 1)
+        elseif key == "Q" then
+            return 0
         elseif key == "ENTER" then
-            if cursor <= #items then
-                sel_set[cursor] = not sel_set[cursor] or nil
-            elseif cursor == as then
-                local rc = run_install_action()
-                if rc then return rc end
-            else return leave(0) end
+            local rc = run_download_action()
+            if rc then return rc end
         end
-        ::cont::
     end
 end
 
