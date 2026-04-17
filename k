@@ -318,16 +318,14 @@ end
 -- Logo  (toilet → figlet → built-in block-letter fallback)
 --
 --   Install in Termux for best results:
---     pkg install toilet figlet
---     pip install lolcat    OR    pkg install ruby && gem install lolcat
--- ─────────────────────────────────────────────────────────────────────────────
 local BUILTIN_LOGO = {
-    { C.b1, "  ██╗     ██╗   ██╗███╗   ██╗███████╗██╗  ██╗  " },
-    { C.b2, "  ██║     ██║   ██║████╗  ██║██╔════╝╚██╗██╔╝  " },
-    { C.b3, "  ██║     ██║   ██║██╔██╗ ██║█████╗   ╚███╔╝   " },
-    { C.b4, "  ██║     ██║   ██║██║╚██╗██║██╔══╝   ██╔██╗   " },
-    { C.b5, "  ███████╗╚██████╔╝██║ ╚████║███████╗██╔╝╚██╗  " },
-    { C.b6, "  ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝  " },
+    { C.b1, " ██╗      ██╗   ██╗███╗   ██╗███████╗██╗  ██╗ " },
+    { C.b2, " ██║      ██║   ██║████╗  ██║██╔════╝╚██╗██╔╝ " },
+    { C.b3, " ██║      ██║   ██║██╔██╗ ██║█████╗   ╚███╔╝  " },
+    { C.b4, " ██║      ██║   ██║██║╚██╗██║██╔══╝   ██╔██╗  " },
+    { C.b5, " ███████╗ ╚██████╔╝██║ ╚████║███████╗██╔╝╚██╗ " },
+    { C.b6, " ╚══════╝  ╚═════╝ ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ " },
+    { C.b5, "            L U N E X   A U T H   S U I T E            " },
 }
 
 local function split_lines(s)
@@ -340,52 +338,6 @@ end
 local LOGO_CACHE, LOGO_PRE_COLORED = nil, false
 
 local function build_logo_cache()
-    -- 1. toilet  (Termux: pkg install toilet)
-    if cmd_exists("toilet") then
-        for _, font in ipairs({ "future", "mono12", "mono9", "bigmono9", "smblock", "smmono9" }) do
-            local out = run_all("toilet -f " .. font .. " -w 120 LUNEX")
-            if out:match("%S") then
-                local lines = split_lines(out)
-                if #lines >= 3 then
-                    -- Try lolcat rainbow over toilet output
-                    if cmd_exists("lolcat") then
-                        local p = temp_path("lunex_logo")
-                        local f = io.open(p, "w")
-                        if f then
-                            f:write(table.concat(lines, "\n") .. "\n"); f:close()
-                            local colored = run_all("lolcat -f " .. shell_escape(p))
-                            os.remove(p)
-                            if colored:match("%S") then
-                                LOGO_CACHE      = split_lines(colored)
-                                LOGO_PRE_COLORED = true
-                                return
-                            end
-                        end
-                    end
-                    LOGO_CACHE      = lines
-                    LOGO_PRE_COLORED = false
-                    return
-                end
-            end
-        end
-    end
-
-    -- 2. figlet  (Termux: pkg install figlet)
-    if cmd_exists("figlet") then
-        for _, font in ipairs({ "big", "banner3-D", "standard", "slant" }) do
-            local out = run_all("figlet -f " .. font .. " -w 120 LUNEX")
-            if out:match("%S") then
-                local lines = split_lines(out)
-                if #lines >= 3 then
-                    LOGO_CACHE      = lines
-                    LOGO_PRE_COLORED = false
-                    return
-                end
-            end
-        end
-    end
-
-    -- 3. Built-in block-letter fallback
     LOGO_CACHE      = BUILTIN_LOGO
     LOGO_PRE_COLORED = false
 end
