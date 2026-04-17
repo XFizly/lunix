@@ -244,6 +244,114 @@ local function temp_path(prefix)
     return TEMP_ROOT .. separator .. prefix .. "_" .. math.random(999999) .. ".tmp"
 end
 
+local function terminal_width()
+    local width = tonumber(shell_first_line("tput cols"))
+    return math.max(60, width or 80)
+end
+
+local function clear_screen()
+    if IS_WINDOWS then
+        os.execute("cls >" .. NULL_DEVICE .. " 2>&1")
+    end
+    io.write("\027[3J\027[2J\027[H")
+    io.flush()
+end
+
+local function visible_length(text)
+    return #tostring(text or "")
+end
+
+local function center_text(text, width)
+    local clean = tostring(text or "")
+    local padding = math.max(0, width - visible_length(clean))
+    local left = math.floor(padding / 2)
+    local right = padding - left
+    return string.rep(" ", left) .. clean .. string.rep(" ", right)
+end
+
+local function truncate_text(text, width)
+    local clean = tostring(text or "")
+    if width <= 0 then
+        return ""
+    end
+    if #clean <= width then
+        return clean
+    end
+    return clean:sub(1, math.max(1, width - 3)) .. "..."
+end
+
+local function pad_right(text, width)
+    local clean = tostring(text or "")
+    if #clean >= width then
+        return truncate_text(clean, width)
+    end
+    return clean .. string.rep(" ", width - #clean)
+end
+
+local LOGO = {
+    "██╗     ██╗   ██╗███╗   ██╗███████╗██╗  ██╗",
+    "██║     ██║   ██║████╗  ██║██╔════╝╚██╗██╔╝",
+    "██║     ██║   ██║██╔██╗ ██║█████╗   ╚███╔╝ ",
+    "██║     ██║   ██║██║╚████║██╔══╝   ██╔██╗ ",
+    "███████╗╚██████╔╝██║ ╚███║███████╗██╔╝ ╚██╗",
+    "╚══════╝ ╚═════╝ ╚═╝  ╚══╝╚══════╝╚═╝   ╚═╝",
+}
+
+local function draw_header(subtitle)
+    local width = terminal_width()
+    clear_screen()
+    io.write("\n")
+    for _, line in ipairs(LOGO) do
+        io.write(center_text(line, width) .. "\n")
+    end
+    if subtitle and subtitle ~= "" then
+        io.write(center_text(subtitle, width) .. "\n")
+    end
+    io.write(center_text(string.rep("-", math.min(width - 4, 56)), width) .. "\n\n")
+end
+
+local function draw_box(lines)
+    local width = terminal_width()
+    local inner = math.max(24, math.min(width - 6, 72))
+    io.write("  +" .. string.rep("-", inner) .. "+\n")
+    for _, line in ipairs(lines) do
+        io.write("  |" .. pad_right(tostring(line or ""), inner) .. "|\n")
+    end
+    io.write("  +" .. string.rep("-", inner) .. "+\n")
+end
+
+local function show_license_screen(message)
+    draw_header("Authentication")
+    draw_box({
+        "Enter your license key to continue.",
+        "",
+        "Run /key_information in the Discord bot if you need your key.",
+        "Paste the license key below.",
+        "",
+        message or "Waiting for license key.",
+    })
+    io.write("\n")
+end
+
+local function show_code_screen(device_label, message)
+    draw_header("Verification")
+    draw_box({
+        "Device: " .. truncate_text(device_label, 54),
+        "",
+        "Run /get-termux-code in the Discord bot.",
+        "Paste the code from your DMs below.",
+        "",
+        message or "Waiting for Termux code.",
+    })
+    io.write("\n")
+end
+
+local function show_status_screen(title, message)
+    draw_header(title)
+    draw_box({ message or "" })
+    io.write("\n")
+end
+
 local function shell_escape(value)
     if IS_WINDOWS then
         return '"' .. tostring(value):gsub('"', '""') .. '"'
@@ -529,7 +637,8 @@ local function prompt(label)
     return trim(io.read("*l") or "")
 end
 
-local function MainMenu()
+local function print_success()
+    show_status_screen("Success", "Authentication completed.")
     print("Success")
 end
 
@@ -542,12 +651,14 @@ local function main()
     local saved_license = load_saved_license()
 
     if saved_license then
+        show_status_screen("Authentication", "Checking saved license...")
         local status = auto_login(saved_license, hwid, device_label)
         if status == "valid" then
-            MainMenu()
+            print_success()
             return
         end
         if status == "server" then
+            show_status_screen("Authentication", "Server unavailable.")
             print("Server unavailable.")
             return
         end
@@ -555,25 +666,34 @@ local function main()
     end
 
     while true do
+        show_license_screen("Waiting for license key.")
         local license_key = prompt("License key"):upper()
         if license_key == "" then
+            show_license_screen("Invalid license key.")
             print("Invalid.")
         else
+            show_status_screen("Authentication", "Checking license key...")
             local license_status = check_license(license_key)
             if license_status == "server" then
+                show_status_screen("Authentication", "Server unavailable.")
                 print("Server unavailable.")
                 return
             end
             if license_status ~= "valid" then
+                show_license_screen("Invalid license key.")
                 print("Invalid.")
             else
                 while true do
+                    show_code_screen(device_label, "Waiting for Termux code.")
                     local termux_code = prompt("Termux code"):upper()
                     if termux_code == "" then
+                        show_code_screen(device_label, "Invalid Termux code.")
                         print("Invalid.")
                     else
+                        show_status_screen("Verification", "Checking Termux code...")
                         local validation_status = validate_code(license_key, termux_code, hwid, device_label)
                         if validation_status == "server" then
+                            show_status_screen("Verification", "Server unavailable.")
                             print("Server unavailable.")
                             return
                         end
@@ -584,14 +704,18 @@ local function main()
                         end
                         if validation_status == "invalid_license" then
                             os.remove(LICENSE_PATH)
+                            show_license_screen("Invalid license key.")
                             print("Invalid.")
                             break
                         end
                         if validation_status == "expired" then
+                            show_code_screen(device_label, "Code expired. Run /get-termux-code again.")
                             print("Expired.")
                         elseif validation_status == "hwid_limit_reached" then
+                            show_code_screen(device_label, "HWID limit reached.")
                             print("HWID limit reached.")
                         else
+                            show_code_screen(device_label, "Invalid Termux code.")
                             print("Invalid.")
                         end
                     end
@@ -603,6 +727,7 @@ end
 
 local ok, err = pcall(main)
 if not ok then
+    show_status_screen("Error", trim(err))
     print(trim(err))
     os.exit(1)
 end
