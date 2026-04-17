@@ -845,55 +845,70 @@ end
 -- ══════════════════════════════════════════════════════════════════
 --  Catalog screen  (per-item box rows)
 -- ══════════════════════════════════════════════════════════════════
-local function render_catalog(entries, scroll, msg)
+local function render_catalog(entries, cursor, msg)
     clear(); draw_header("Clones Catalog")
+    reset_click_regions()
 
-    local max_rows = math.max(4, th() - 24)
-    local start_at = math.max(1, math.min(scroll, math.max(1, #entries - max_rows + 1)))
-    local end_at = math.min(#entries, start_at + max_rows - 1)
+    local max_rows = math.max(4, th() - 28)
     local tot_sz = 0
     for _, e in ipairs(entries) do tot_sz = tot_sz + (e.size or 0) end
+    local y = header_line_count("Clones Catalog")
 
     sp()
-    info_card({
+    local summary_rows = {
         kv_inline("Folder", sanitize_terminal_text(DL_ROOT, 44), C.accent),
         kv_inline("Files", tostring(#entries).."  ("..hsize(tot_sz)..")", C.text),
-        kv_inline("Action", "Enter downloads every clone", C.success),
-    }, C.border_mid)
+        kv_inline("Action", "Download every clone at once", C.success),
+    }
+    info_card(summary_rows, C.border_mid)
+    y = y + box_height(nil, summary_rows)
     sp()
+    y = y + 1
 
-    info_card({
+    local info_rows = {
         col("Go to "..DL_ROOT.." and install however many clones you want.", C.text),
         col("The tool downloads every clone because files can expire later.", C.muted),
         col("Saving them now gives the lowest chance of losing them later.", C.muted),
-    }, C.border)
+    }
+    info_card(info_rows, C.border)
+    y = y + box_height(nil, info_rows)
     sp()
+    y = y + 1
 
     if msg then
         item_box(pad_c(col(tone_icon(msg[1]).."  "..msg[2], TONES[msg[1]] or C.muted, C.bold), tw() - 8), false, TONES[msg[1]])
+        y = y + 3
         sp()
+        y = y + 1
     end
 
     local rows = {}
-    for i = start_at, end_at do
+    for i = 1, math.min(#entries, max_rows) do
         local e = entries[i]
         local name = sanitize_terminal_text(e.name, tw() - 22)
         local sz = col(hsize(e.size), C.dim)
         rows[#rows + 1] = col(string.format("%02d", i), C.accent, C.bold).."  "..pad_r(col(name, C.text), math.max(18, tw() - 18 - vlen(sz)))..sz
     end
-    if #rows == 0 then rows[1] = col("No clone files available.", C.dim) end
-    info_card(rows, C.border_mid)
-
-    if #entries > max_rows then
-        sp()
-        info_card({
-            kv_inline("Visible", start_at.." - "..end_at, C.text),
-            kv_inline("More", "Use ↑↓ to scroll the catalog", C.muted),
-        }, C.border)
+    if #rows == 0 then
+        rows[1] = col("No clone files available.", C.dim)
+    elseif #entries > max_rows then
+        rows[#rows + 1] = col("+"..(#entries - max_rows).." more clones will also be downloaded.", C.muted)
     end
+    info_card(rows, C.border_mid)
+    y = y + box_height(nil, rows)
+    sp()
+    y = y + 1
+
+    local download_active = cursor == 1
+    local back_active = cursor == 2
+    item_box(pad_c(col("[+]  Download clones", download_active and C.success or C.muted, download_active and C.bold or ""), tw() - 8), download_active, download_active and C.success or C.border)
+    add_click_region(y, y + 2, "catalog_action", 1)
+    y = y + 3
+    item_box(pad_c(col("[<]  Go back", back_active and C.danger or C.muted, back_active and C.bold or ""), tw() - 8), back_active, back_active and C.danger or C.border)
+    add_click_region(y, y + 2, "catalog_action", 2)
 
     footer_line("Downloads only", "Open the folder after completion")
-    hint_bar({ {"↑↓","scroll"}, {"Enter","download all"}, {"Q","back"} })
+    hint_bar({ {"↑↓","actions"}, {"Enter","select"}, {"Q","back"} })
 end
 
 local function render_summ(results)
@@ -902,7 +917,7 @@ local function render_summ(results)
     for _, r in ipairs(results) do if r[2] then ok_n=ok_n+1 else fail_n=fail_n+1 end end
     sp()
     info_card({
-        kv_inline("Downloaded", tostring(ok_n), C.success),
+        kv_inline("Successfully downloaded", tostring(ok_n), C.success),
         kv_inline("Failed", tostring(fail_n), fail_n > 0 and C.danger or C.muted),
         kv_inline("Folder", sanitize_terminal_text(DL_ROOT, 44), C.accent),
     }, C.border_mid)
@@ -933,32 +948,54 @@ local function run_catalog(hwid, lbl)
     if not ok_s then push_debug("CATALOG", tostring(sess)); show_error("Load Failed","Unable to fetch clone list."); return 1 end
     if #items == 0 then push_debug("CATALOG","empty"); show_error("Load Failed","No clones were found."); return 1 end
 
-    local max_rows = math.max(4, th() - 24)
-    local scroll = 1
-    set_mouse_mode(false)
+    local cursor = 1
+    set_mouse_mode(true)
+
+    local function leave(code)
+        set_mouse_mode(false)
+        return code
+    end
 
     local function run_download_action()
         local ast, amsg = ensure_access(hwid, lbl)
-        if ast == "server" then show_error("Access", amsg); return 2 end
-        if ast ~= "valid" then status_box("Access", amsg, "danger"); sleep(1); return 2 end
+        if ast == "server" then show_error("Access", amsg); return leave(2) end
+        if ast ~= "valid" then status_box("Access", amsg, "danger"); sleep(1); return leave(2) end
+        set_mouse_mode(false)
         render_summ(download_all_clones(items, sess))
+        set_mouse_mode(true)
         msg = {"success","All clones were downloaded to "..DL_ROOT}
         return nil
     end
 
     while true do
-        render_catalog(items, scroll, msg); msg = nil
+        render_catalog(items, cursor, msg); msg = nil
         local key = read_key()
 
         if key == "UP" then
-            scroll = math.max(1, scroll - 1)
+            cursor = ((cursor - 2) % 2) + 1
         elseif key == "DOWN" then
-            scroll = math.min(math.max(1, #items - max_rows + 1), scroll + 1)
+            cursor = (cursor % 2) + 1
         elseif key == "Q" then
-            return 0
+            return leave(0)
+        elseif key:match("^CLICK:") then
+            local click_y = tonumber(key:match("^CLICK:(%d+)$"))
+            local kind, value = resolve_click_region(click_y or -1)
+            if kind == "catalog_action" then
+                cursor = value
+                if value == 1 then
+                    local rc = run_download_action()
+                    if rc then return rc end
+                else
+                    return leave(0)
+                end
+            end
         elseif key == "ENTER" then
-            local rc = run_download_action()
-            if rc then return rc end
+            if cursor == 1 then
+                local rc = run_download_action()
+                if rc then return rc end
+            else
+                return leave(0)
+            end
         end
     end
 end
