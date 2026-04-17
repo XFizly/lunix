@@ -454,6 +454,7 @@ end
 --  Activity / Error screens
 -- ══════════════════════════════════════════════════════════════════
 local function show_activity()
+    set_mouse_mode(false)
     clear(); draw_header("Activity Log")
     local rows = {}
     local si = math.max(1, #DEBUG_LOGS - 18)
@@ -466,6 +467,7 @@ local function show_activity()
 end
 
 local function show_error(title, msg)
+    set_mouse_mode(false)
     while true do
         clear(); draw_header(title)
         sp()
@@ -487,8 +489,96 @@ end
 -- ══════════════════════════════════════════════════════════════════
 --  Keyboard
 -- ══════════════════════════════════════════════════════════════════
-local READ_KEY_CMD = [[bash -c 'IFS= read -r -s -n1 k </dev/tty 2>/dev/null; IFS= read -r -s -n2 -t0.1 s </dev/tty 2>/dev/null; printf "%s" "$k$s"' 2>/dev/null | od -An -tx1 | tr -d ' \n\r']]
+local READ_KEY_CMD = [[bash -c '
+exec </dev/tty
+IFS= read -r -s -n1 k || exit 0
+if [ "$k" = $'\''\e'\'' ]; then
+  IFS= read -r -s -n1 -t0.05 a || { printf ESC; exit 0; }
+  if [ "$a" = "[" ]; then
+    IFS= read -r -s -n1 -t0.05 b || { printf ESC; exit 0; }
+    case "$b" in
+      A) printf UP; exit 0 ;;
+      B) printf DOWN; exit 0 ;;
+      C) printf RIGHT; exit 0 ;;
+      D) printf LEFT; exit 0 ;;
+      "<")
+        seq=""
+        while IFS= read -r -s -n1 -t0.05 c; do
+          seq="$seq$c"
+          case "$c" in M|m) break ;; esac
+        done
+        printf "MOUSE:%s" "$seq"
+        exit 0
+      ;;
+    esac
+  fi
+  printf ESC
+  exit 0
+fi
+case "$k" in
+  $'\''\r'\''|$'\''\n'\'') printf ENTER ;;
+  " ") printf SPACE ;;
+  [Aa]) printf A ;;
+  [Qq]) printf Q ;;
+  [0-9]) printf "NUM:%s" "$k" ;;
+  *) printf "" ;;
+esac
+']]
 local READ_KEY_WIN = [[powershell -NoProfile -Command "$k=[Console]::ReadKey($true); switch($k.Key.ToString()){ 'UpArrow'{'UP'} 'DownArrow'{'DOWN'} 'Enter'{'ENTER'} 'Spacebar'{'SPACE'} 'A'{'A'} 'Q'{'Q'} default{''} }"]]
+
+local MOUSE_ENABLED = false
+local CLICK_REGIONS = {}
+
+local function set_mouse_mode(enabled)
+    if IS_WINDOWS or enabled == MOUSE_ENABLED then return end
+    if enabled then
+        io.write("\027[?1000h\027[?1006h")
+    else
+        io.write("\027[?1000l\027[?1006l")
+    end
+    io.flush()
+    MOUSE_ENABLED = enabled
+end
+
+local function reset_click_regions()
+    CLICK_REGIONS = {}
+end
+
+local function add_click_region(y1, y2, kind, value)
+    CLICK_REGIONS[#CLICK_REGIONS + 1] = { y1 = y1, y2 = y2, kind = kind, value = value }
+end
+
+local function resolve_click_region(y)
+    for _, region in ipairs(CLICK_REGIONS) do
+        if y >= region.y1 and y <= region.y2 then
+            return region.kind, region.value
+        end
+    end
+end
+
+local function header_height(page)
+    return 2 + #LOGO + 1 + (page and page ~= "" and 1 or 0) + 1 + 1 + 1 + 1
+end
+
+local function box_height(title, rows)
+    return 2 + #rows + ((title and title ~= "") and 2 or 0)
+end
+
+local function box_row_y(box_top, has_title, row_index)
+    return box_top + ((has_title and 3) or 1) + (row_index - 1)
+end
+
+local function sanitize_terminal_text(s, width)
+    local clean = tostring(s or ""):gsub("[%c]+", " "):match("^%s*(.-)%s*$")
+    if width then
+        return short(clean, width)
+    end
+    return clean
+end
+
+local function header_line_count(subtitle)
+    return 1 + #LOGO + ((subtitle and subtitle ~= "") and 1 or 0) + 1 + 1
+end
 
 local function read_key()
     if IS_WINDOWS then
@@ -496,14 +586,16 @@ local function read_key()
         local v=(f:read("*a") or ""):match("^%s*(.-)%s*$"); f:close(); return v
     end
     local f=io.popen(READ_KEY_CMD); if not f then return "" end
-    local h=(f:read("*a") or ""):lower():gsub("[%s\n\r]",""); f:close()
-    if h=="1b5b41" then return "UP" end
-    if h=="1b5b42" then return "DOWN" end
-    if h=="" or h=="0d" or h=="0a" then return "ENTER" end
-    if h=="20" then return "SPACE" end
-    if h=="61" or h=="41" then return "A" end
-    if h=="71" or h=="51" or h=="03" then return "Q" end
-    return ""
+    local raw=(f:read("*a") or ""):match("^%s*(.-)%s*$"); f:close()
+    if raw:match("^MOUSE:") then
+        local data = raw:sub(7)
+        local _, _, y, state = data:match("^([0-9]+);([0-9]+);([0-9]+)([Mm])$")
+        if y and state == "M" then
+            return "CLICK:" .. y
+        end
+        return ""
+    end
+    return raw
 end
 
 local function prompt_val(label)
@@ -717,21 +809,59 @@ local function dl_apk(sess,apk)
 end
 
 local function inst_apk(path)
-    local tries={}
-    if shl("command -v su")~="" then
-        tries[#tries+1]="su -c "..esc("pm install -r "..path)
-        tries[#tries+1]="su -c "..esc("cmd package install -r "..path)
+    local function run_capture(cmd)
+        local f = io.popen(cmd .. " 2>&1")
+        local out = f and (f:read("*a") or "") or ""
+        local ok, reason, code = true, "exit", 0
+        if f then ok, reason, code = f:close() end
+        return ok, reason, code, sanitize_terminal_text(out, 220)
     end
-    if shl("command -v pm")~="" then tries[#tries+1]="pm install -r "..esc(path) end
-    if #tries==0 then return false,"No package installer found." end
-    local last="Install failed."
-    for _,cmd in ipairs(tries) do
-        local f=io.popen(cmd.." 2>&1"); local out=f and (f:read("*a") or "") or ""
-        if f then f:close() end; out=out:match("^%s*(.-)%s*$")
-        if out:match("[Ss]uccess") then return true,out end
-        if out~="" then last=out end
+
+    local function root_available()
+        if shl("command -v su") == "" then return false end
+        return shl("su -c id"):match("uid=0") ~= nil
     end
-    return false,last
+
+    local function stage_and_run(inner)
+        local staged = "/data/local/tmp/lunex_install_" .. math.random(999999) .. ".apk"
+        local script = "cp " .. esc(path) .. " " .. esc(staged)
+            .. " && chmod 644 " .. esc(staged)
+            .. " && " .. inner:gsub("$APK", esc(staged))
+            .. "; rc=$?; rm -f " .. esc(staged) .. "; exit $rc"
+        return "su -c " .. esc(script)
+    end
+
+    local tries = {}
+    if root_available() then
+        tries[#tries + 1] = stage_and_run("pm install -r $APK")
+        tries[#tries + 1] = stage_and_run("pm install -r --user 0 $APK")
+        tries[#tries + 1] = stage_and_run("cmd package install -r $APK")
+    end
+    if shl("command -v termux-open") ~= "" then
+        tries[#tries + 1] = "termux-open " .. esc(path)
+    end
+    if shl("command -v am") ~= "" then
+        tries[#tries + 1] = "am start -a android.intent.action.VIEW -d " .. esc("file://" .. path) .. " -t application/vnd.android.package-archive"
+    end
+    if shl("command -v pm") ~= "" then
+        tries[#tries + 1] = "pm install -r " .. esc(path)
+    end
+    if #tries == 0 then return false, "No package installer found." end
+
+    local last = "Install failed."
+    for _, cmd in ipairs(tries) do
+        local ok, _, _, out = run_capture(cmd)
+        if out:match("[Ss]uccess") or out:match("[Ii]nstaller opened") then
+            return true, out
+        end
+        if ok and (cmd:match("^termux%-open") or cmd:match("^am start")) then
+            return true, out ~= "" and out or "Installer opened."
+        end
+        if out ~= "" then
+            last = out
+        end
+    end
+    return false, last
 end
 
 local function install_selected(entries,idxs,sess)
@@ -743,13 +873,13 @@ local function install_selected(entries,idxs,sess)
         if dOk then
             mdelay(pos,total,pos*5)
             local iOk,iSuc,iMsg=pcall(inst_apk,dR)
-            if iOk then ok=iSuc; out=iMsg or (iSuc and "Success" or "Install failed.")
-            else ok=false; out=tostring(iSuc) end
+            if iOk then ok=iSuc; out=sanitize_terminal_text(iMsg or (iSuc and "Success" or "Install failed."), 180)
+            else ok=false; out=sanitize_terminal_text(tostring(iSuc), 180) end
             os.remove(dR)
-        else out=tostring(dR) end
+        else out=sanitize_terminal_text(tostring(dR), 180) end
         mdelay(pos,total,pos*7,1,0.25)
         results[#results+1]={apk.name,ok,out}
-        prog((ok and "Completed" or "Failed").." "..pos.."/"..total,apk.name,out,ok and "success" or "danger")
+        prog((ok and "Completed" or "Failed").." "..pos.."/"..total,sanitize_terminal_text(apk.name, 60),out,ok and "success" or "danger")
         sleep(ok and 0.8 or 1.0)
     end
     return results
@@ -772,8 +902,10 @@ end
 -- ══════════════════════════════════════════════════════════════════
 local function render_catalog(entries, sel_set, cursor, msg)
     clear(); draw_header("Clones Catalog")
+    reset_click_regions()
 
     local w = tw()
+    local y = header_line_count("Clones Catalog")
     -- Stats card
     local sel_cnt, sel_sz, tot_sz = 0, 0, 0
     for i, e in ipairs(entries) do
@@ -785,11 +917,19 @@ local function render_catalog(entries, sel_set, cursor, msg)
         kv_inline("Selected",  sel_cnt.."/"..#entries.."  ("..hsize(sel_sz)..")", C.accent),
         kv_inline("Total size",hsize(tot_sz), C.muted),
     }, C.border_mid)
+    y = y + box_height(nil, {
+        kv_inline("Device", short(DEVICE_LABEL, 36), C.text),
+        kv_inline("Selected", sel_cnt.."/"..#entries.."  ("..hsize(sel_sz)..")", C.accent),
+        kv_inline("Total size", hsize(tot_sz), C.muted),
+    })
     sp()
+    y = y + 1
 
     if msg then
         item_box(pad_c(col(tone_icon(msg[1]).."  "..msg[2], TONES[msg[1]] or C.muted, C.bold), tw() - 8), false, TONES[msg[1]])
+        y = y + 3
         sp()
+        y = y + 1
     end
 
     -- File list rows
@@ -804,15 +944,21 @@ local function render_catalog(entries, sel_set, cursor, msg)
         local gap     = math.max(1, inner_w - vlen(marker) - vlen(name) - vlen(sz_str) - 1)
         local content = left..string.rep(" ", gap)..sz_str
         item_box(content, active, active and C.border_hi or (sel and C.border_mid or C.border))
+        add_click_region(y, y + 2, "catalog_item", i)
+        y = y + 3
     end
     sp()
+    y = y + 1
 
     -- Action rows
     local base   = #entries + 1
     local ia_dl  = cursor == base
     local ia_bk  = cursor == base + 1
     item_box(pad_c(col("[+]  Install selected clones", ia_dl and C.success or C.muted, ia_dl and C.bold or ""), tw() - 8), ia_dl, ia_dl and C.success or C.border)
+    add_click_region(y, y + 2, "catalog_action", 1)
+    y = y + 3
     item_box(pad_c(col("[<]  Back to menu",            ia_bk and C.danger  or C.muted, ia_bk and C.bold or ""), tw() - 8), ia_bk, ia_bk and C.danger  or C.border)
+    add_click_region(y, y + 2, "catalog_action", 2)
 
     hint_bar({ {"↑↓","move"}, {"Space","toggle"}, {"A","all"}, {"Enter","confirm"}, {"Q","back"} })
 end
@@ -830,10 +976,10 @@ local function render_summ(results)
     for _, r in ipairs(results) do
         local ok   = r[2]
         local icon = ok and col("[✔] ", C.success, C.bold) or col("[✖] ", C.danger, C.bold)
-        local nm   = col(trunc(r[1], tw() - 14), ok and C.text or C.warning)
+        local nm   = col(trunc(sanitize_terminal_text(r[1], tw() - 14), tw() - 14), ok and C.text or C.warning)
         item_box(icon..nm, false, ok and C.border_mid or C.border_err)
         if r[3] and r[3] ~= "" then
-            info_card({ col("    "..trunc(r[3], tw() - 10), C.muted) }, C.border)
+            info_card({ col("    "..sanitize_terminal_text(r[3], tw() - 10), C.muted) }, C.border)
         end
     end
     sp()
@@ -850,6 +996,28 @@ local function run_catalog(hwid, lbl)
 
     local sel_set, cursor = {}, 1
     local total_rows = #items + 2
+    set_mouse_mode(true)
+
+    local function leave(code)
+        set_mouse_mode(false)
+        return code
+    end
+
+    local function run_install_action()
+        local cnt = 0; for _ in pairs(sel_set) do cnt = cnt + 1 end
+        if cnt == 0 then msg = {"warning","Select at least one clone first."}; return nil end
+        local ast, amsg = ensure_access(hwid, lbl)
+        if ast == "server" then show_error("Access", amsg); return leave(2) end
+        if ast ~= "valid" then status_box("Access", amsg, "danger"); sleep(1); return leave(2) end
+        local idxs = {}
+        for i = 1, #items do if sel_set[i] then idxs[#idxs+1] = i end end
+        set_mouse_mode(false)
+        render_summ(install_selected(items, idxs, sess))
+        set_mouse_mode(true)
+        sel_set = {}
+        msg = {"success","Install run completed."}
+        return nil
+    end
 
     while true do
         render_catalog(items, sel_set, cursor, msg); msg = nil
@@ -858,27 +1026,35 @@ local function run_catalog(hwid, lbl)
 
         if key == "UP"    then cursor = ((cursor - 2) % total_rows) + 1
         elseif key == "DOWN"  then cursor = (cursor % total_rows) + 1
-        elseif key == "Q"     then return 0
+        elseif key == "Q"     then return leave(0)
         elseif key == "SPACE" then
             if cursor <= #items then sel_set[cursor] = not sel_set[cursor] or nil end
         elseif key == "A" then
             local cnt = 0; for _ in pairs(sel_set) do cnt = cnt + 1 end
             if cnt == #items then sel_set = {}
             else for i = 1, #items do sel_set[i] = true end end
+        elseif key:match("^CLICK:") then
+            local click_y = tonumber(key:match("^CLICK:(%d+)$"))
+            local kind, value = resolve_click_region(click_y or -1)
+            if kind == "catalog_item" then
+                cursor = value
+                sel_set[cursor] = not sel_set[cursor] or nil
+            elseif kind == "catalog_action" then
+                cursor = #items + value
+                if value == 1 then
+                    local rc = run_install_action()
+                    if rc then return rc end
+                else
+                    return leave(0)
+                end
+            end
         elseif key == "ENTER" then
             if cursor <= #items then
                 sel_set[cursor] = not sel_set[cursor] or nil
             elseif cursor == as then
-                local cnt = 0; for _ in pairs(sel_set) do cnt = cnt + 1 end
-                if cnt == 0 then msg = {"warning","Select at least one clone first."}; goto cont end
-                local ast, amsg = ensure_access(hwid, lbl)
-                if ast == "server" then show_error("Access", amsg); return 2 end
-                if ast ~= "valid"  then status_box("Access", amsg, "danger"); sleep(1); return 2 end
-                local idxs = {}
-                for i = 1, #items do if sel_set[i] then idxs[#idxs+1] = i end end
-                render_summ(install_selected(items, idxs, sess))
-                sel_set = {}; msg = {"success","Install run completed."}
-            else return 0 end
+                local rc = run_install_action()
+                if rc then return rc end
+            else return leave(0) end
         end
         ::cont::
     end
@@ -894,21 +1070,28 @@ local MENU_ITEMS = {
 
 local function render_main_menu(cursor, notice)
     clear(); draw_header()
+    reset_click_regions()
 
     local w = tw()
+    local y = header_line_count(nil)
 
     -- User / session card
-    info_card({
+    local session_rows = {
         kv_inline("Device", short(DEVICE_LABEL, 36), C.text),
         kv_inline("Status", "● Online",               C.success),
         kv_inline("Build",  "v1.0  ·  Lifetime",      C.muted),
-    }, C.border_mid)
+    }
+    info_card(session_rows, C.border_mid)
+    y = y + box_height(nil, session_rows)
     sp()
+    y = y + 1
 
     -- Notice band
     if notice then
         item_box(pad_c(col(tone_icon(notice[1]).."  "..notice[2], TONES[notice[1]] or C.muted, C.bold), w - 8), false, TONES[notice[1]])
+        y = y + 3
         sp()
+        y = y + 1
     end
 
     -- Menu items — each in its own box
@@ -920,9 +1103,12 @@ local function render_main_menu(cursor, notice)
         local content = pad_c(lbl..tag, w - 8)
         local bc      = active and item.color or (item.enabled and C.border or C.border)
         item_box(content, active, bc)
+        add_click_region(y, y + 2, "main_item", i)
+        y = y + 3
     end
 
     sp()
+    y = y + 1
 
     -- Logout / Exit  — side by side
     local exit_idx = #MENU_ITEMS + 1
@@ -932,6 +1118,7 @@ local function render_main_menu(cursor, notice)
         col("[Q]  Quit", la and C.danger or C.muted, la and C.bold or ""),
         la, la, la and C.danger or C.border, la and C.danger or C.border
     )
+    add_click_region(y, y + 2, "main_exit", exit_idx)
 
     footer_line("discord.gg/HQtp9fVqZT", "v1.0  ·  Lifetime Session")
     hint_bar({ {"↑↓","navigate"}, {"Enter","select"}, {"Q","quit"} })
@@ -941,6 +1128,12 @@ local function run_main_menu(hwid, lbl)
     local cursor = 1
     local notice = nil
     local total  = #MENU_ITEMS + 1
+    set_mouse_mode(true)
+
+    local function leave(code)
+        set_mouse_mode(false)
+        return code
+    end
 
     while true do
         render_main_menu(cursor, notice); notice = nil
@@ -948,14 +1141,32 @@ local function run_main_menu(hwid, lbl)
 
         if key == "UP"       then cursor = ((cursor - 2) % total) + 1
         elseif key == "DOWN" then cursor = (cursor % total) + 1
-        elseif key == "Q"    then return 0
+        elseif key == "Q"    then return leave(0)
+        elseif key:match("^CLICK:") then
+            local click_y = tonumber(key:match("^CLICK:(%d+)$"))
+            local kind, value = resolve_click_region(click_y or -1)
+            if kind == "main_item" then
+                cursor = value
+                local item = MENU_ITEMS[cursor]
+                if not item.enabled then
+                    notice = {"soon", "This feature is coming soon — stay tuned!"}
+                elseif cursor == 1 then
+                    local r = run_catalog(hwid, lbl)
+                    set_mouse_mode(true)
+                    if r == 2 then notice = {"warning","Session expired. Please re-authenticate."} end
+                end
+            elseif kind == "main_exit" then
+                cursor = value
+                return leave(0)
+            end
         elseif key == "ENTER" then
-            if cursor == #MENU_ITEMS + 1 then return 0 end
+            if cursor == #MENU_ITEMS + 1 then return leave(0) end
             local item = MENU_ITEMS[cursor]
             if not item.enabled then
                 notice = {"soon", "This feature is coming soon — stay tuned!"}
             elseif cursor == 1 then
                 local r = run_catalog(hwid, lbl)
+                set_mouse_mode(true)
                 if r == 2 then notice = {"warning","Session expired. Please re-authenticate."} end
             end
         end
@@ -1070,4 +1281,8 @@ local function main()
 end
 
 local ok, err = pcall(main)
-if not ok then io.write("\n[fatal] "..tostring(err).."\n"); os.exit(1) end
+if not ok then
+    set_mouse_mode(false)
+    io.write("\n[fatal] "..tostring(err).."\n")
+    os.exit(1)
+end
