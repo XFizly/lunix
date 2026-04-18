@@ -7,797 +7,627 @@ exec lua5.4 "$0" "$@"
 ]]
 math.randomseed(os.time())
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Config
--- ─────────────────────────────────────────────────────────────────────────────
-local HOME           = os.getenv("HOME") or "/data/data/com.termux/files/home"
-local IS_WIN         = package.config:sub(1, 1) == "\\"
-local DEVNULL        = IS_WIN and "NUL" or "/dev/null"
-local TEMP_ROOT      = IS_WIN
-    and (os.getenv("TEMP") or os.getenv("TMP") or ".")
-    or  (os.getenv("TMPDIR") or HOME .. "/.lunex-tmp")
-local LUNEX_ROOT     = HOME .. "/lunex"
-local LICENSE_PATH   = LUNEX_ROOT .. "/license_key.json"
-local LUNEX_TOOL_API = "0324241241241:https://lunex-termux-api.vercel.app:lunextool:R9p4K2m8Qx6Z1v3N"
+local HOME=os.getenv("HOME") or "/data/data/com.termux/files/home"
+local IS_WIN=package.config:sub(1,1)=="\\"
+local DEVNULL=IS_WIN and "NUL" or "/dev/null"
+local TEMP_ROOT=IS_WIN and (os.getenv("TEMP") or os.getenv("TMP") or ".") or (os.getenv("TMPDIR") or HOME.."/.lunex-tmp")
+local ROOT_DIR=HOME.."/lunex"
+local LICENSE_PATH=ROOT_DIR.."/license_key.json"
+local DOWNLOAD_DIR=IS_WIN and ((os.getenv("USERPROFILE") or ".").."\\Downloads\\Lunex_Lite_clones") or "/storage/emulated/0/Download/Lunex_Lite_clones"
+local TOOL_SPEC="0324241241241:https://lunex-termux-api.vercel.app:lunextool:R9p4K2m8Qx6Z1v3N"
+local GF_CODE="ePdGcF"
+local GF_PASS="A7K9-X2QM-4RTP-Z8LJ"
+local GF_PAGE="https://gofile.io/d/"..GF_CODE
+local GF_API="https://api.gofile.io"
+local GF_UA="Mozilla/5.0 (Linux; Android 14; Termux)"
+local GF_LANG="en-US"
+local GF_SFXWT="5d4f7g8sd45fsd"
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Minimal JSON
--- ─────────────────────────────────────────────────────────────────────────────
-local json = {}
-
-local function json_encode(v)
-    local t = type(v)
-    if t == "nil"     then return "null" end
-    if t == "boolean" then return v and "true" or "false" end
-    if t == "number"  then return v ~= v and "null" or ("%.14g"):format(v) end
-    if t == "string"  then
-        return '"' .. v:gsub('[\\"]', function(c) return "\\" .. c end)
-                      :gsub("\n","\\n"):gsub("\r","\\r"):gsub("\t","\\t") .. '"'
-    end
-    if t == "table" then
-        local arr = #v > 0
-        if arr then
-            for i = 1, #v do if v[i] == nil then arr = false; break end end
-        end
-        local p = {}
-        if arr then
-            for _, x in ipairs(v) do p[#p+1] = json_encode(x) end
-            return "[" .. table.concat(p, ",") .. "]"
-        end
-        for k, x in pairs(v) do
-            p[#p+1] = json_encode(tostring(k)) .. ":" .. json_encode(x)
-        end
-        return "{" .. table.concat(p, ",") .. "}"
-    end
-    return "null"
+local json={}
+local function jenc(v)
+  local t=type(v)
+  if t=="nil" then return "null" end
+  if t=="boolean" then return v and "true" or "false" end
+  if t=="number" then return v~=v and "null" or ("%.14g"):format(v) end
+  if t=="string" then return '"'..v:gsub('[\\"]',function(c) return "\\"..c end):gsub("\n","\\n"):gsub("\r","\\r"):gsub("\t","\\t")..'"' end
+  if t=="table" then
+    local arr=#v>0
+    if arr then for i=1,#v do if v[i]==nil then arr=false break end end end
+    local p={}
+    if arr then for _,x in ipairs(v) do p[#p+1]=jenc(x) end return "["..table.concat(p,",").."]" end
+    for k,x in pairs(v) do p[#p+1]=jenc(tostring(k))..":"..jenc(x) end
+    return "{"..table.concat(p,",").."}"
+  end
+  return "null"
 end
-
-local function jskip(s, i)
-    while i <= #s do
-        local b = s:byte(i)
-        if b ~= 32 and b ~= 9 and b ~= 10 and b ~= 13 then break end
-        i = i + 1
-    end
-    return i
-end
-
+local function jskip(s,i) while i<=#s do local b=s:byte(i) if b~=32 and b~=9 and b~=10 and b~=13 then break end i=i+1 end return i end
 local jval
-
-local function jstr(s, i)
-    local p, c = {}, i + 1
-    while c <= #s do
-        local ch = s:sub(c, c)
-        if ch == '"' then return table.concat(p), c + 1 end
-        if ch == "\\" then
-            c = c + 1; local e = s:sub(c, c)
-            if e == '"' then p[#p+1] = '"'
-            elseif e == "\\" then p[#p+1] = "\\"
-            elseif e == "n"  then p[#p+1] = "\n"
-            elseif e == "r"  then p[#p+1] = "\r"
-            elseif e == "t"  then p[#p+1] = "\t"
-            elseif e == "u"  then
-                local code = tonumber(s:sub(c+1, c+4), 16) or 63
-                p[#p+1] = code < 128 and string.char(code) or "?"
-                c = c + 4
-            else p[#p+1] = e end
-        else p[#p+1] = ch end
-        c = c + 1
-    end
-    return table.concat(p), c
+local function jstr(s,i)
+  local b,j={},i+1
+  while j<=#s do
+    local c=s:sub(j,j)
+    if c=='"' then return table.concat(b),j+1 end
+    if c=='\\' then
+      j=j+1 local e=s:sub(j,j)
+      if e=='"' then b[#b+1]='"'
+      elseif e=='\\' then b[#b+1]='\\'
+      elseif e=='n' then b[#b+1]='\n'
+      elseif e=='r' then b[#b+1]='\r'
+      elseif e=='t' then b[#b+1]='\t'
+      elseif e=='u' then local n=tonumber(s:sub(j+1,j+4),16) or 63 b[#b+1]=n<128 and string.char(n) or "?" j=j+4
+      else b[#b+1]=e end
+    else b[#b+1]=c end
+    j=j+1
+  end
+  return table.concat(b),j
 end
-
-local function jarr(s, i)
-    local r = {}; i = jskip(s, i)
-    if s:sub(i,i) == "]" then return r, i+1 end
-    while true do
-        local x; x, i = jval(s, i); r[#r+1] = x
-        i = jskip(s, i)
-        local ch = s:sub(i,i)
-        if ch == "]" then return r, i+1 end
-        if ch ~= "," then break end
-        i = i + 1
-    end
-    return r, i
+local function jarr(s,i)
+  local a={} i=jskip(s,i)
+  if s:sub(i,i)=="]" then return a,i+1 end
+  while true do
+    local v v,i=jval(s,i) a[#a+1]=v i=jskip(s,i) local c=s:sub(i,i)
+    if c=="]" then return a,i+1 end
+    if c~="," then break end
+    i=i+1
+  end
+  return a,i
 end
-
-local function jobj(s, i)
-    local r = {}; i = jskip(s, i)
-    if s:sub(i,i) == "}" then return r, i+1 end
-    while true do
-        i = jskip(s, i)
-        local k; k, i = jstr(s, i)
-        i = jskip(s, i)
-        if s:sub(i,i) ~= ":" then break end
-        i = i + 1
-        local x; x, i = jval(s, i)
-        r[k] = x; i = jskip(s, i)
-        local ch = s:sub(i,i)
-        if ch == "}" then return r, i+1 end
-        if ch ~= "," then break end
-        i = i + 1
-    end
-    return r, i
+local function jobj(s,i)
+  local o={} i=jskip(s,i)
+  if s:sub(i,i)=="}" then return o,i+1 end
+  while true do
+    i=jskip(s,i) local k k,i=jstr(s,i) i=jskip(s,i)
+    if s:sub(i,i)~=":" then break end
+    i=i+1 local v v,i=jval(s,i) o[k]=v i=jskip(s,i) local c=s:sub(i,i)
+    if c=="}" then return o,i+1 end
+    if c~="," then break end
+    i=i+1
+  end
+  return o,i
 end
-
-jval = function(s, i)
-    i = jskip(s, i)
-    local ch = s:sub(i,i)
-    if ch == '"' then return jstr(s, i) end
-    if ch == '[' then return jarr(s, i+1) end
-    if ch == '{' then return jobj(s, i+1) end
-    if s:sub(i,i+3) == "true"  then return true,  i+4 end
-    if s:sub(i,i+4) == "false" then return false, i+5 end
-    if s:sub(i,i+3) == "null"  then return nil,   i+4 end
-    local n = s:match("^-?%d+%.?%d*[eE]?[+-]?%d*", i)
-    if n then return tonumber(n), i+#n end
-    return nil, i+1
+jval=function(s,i)
+  i=jskip(s,i) local c=s:sub(i,i)
+  if c=='"' then return jstr(s,i) end
+  if c=="[" then return jarr(s,i+1) end
+  if c=="{" then return jobj(s,i+1) end
+  if s:sub(i,i+3)=="true" then return true,i+4 end
+  if s:sub(i,i+4)=="false" then return false,i+5 end
+  if s:sub(i,i+3)=="null" then return nil,i+4 end
+  local n=s:match("^-?%d+%.?%d*[eE]?[+-]?%d*",i)
+  if n then return tonumber(n),i+#n end
+  return nil,i+1
 end
+function json.decode(s) if type(s)~="string" or s=="" then return nil end local ok,v=pcall(jval,s,1) return ok and v or nil end
+json.encode=jenc
 
-function json.decode(s)
-    if type(s) ~= "string" or s == "" then return nil end
-    local ok, r = pcall(jval, s, 1)
-    return ok and r or nil
-end
-json.encode = json_encode
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Shell helpers
--- ─────────────────────────────────────────────────────────────────────────────
 local function trim(s) return tostring(s or ""):match("^%s*(.-)%s*$") end
+local function mkdir(p) if IS_WIN then os.execute('if not exist "'..p..'" mkdir "'..p..'" >'..DEVNULL..' 2>&1') else os.execute("mkdir -p '"..p:gsub("'","'\\''").."' 2>"..DEVNULL) end end
+local function exists(p) local h=io.open(p,"r") if h then h:close() return true end return false end
+local function esc(s) if IS_WIN then return '"'..tostring(s):gsub('"','""')..'"' end return "'"..tostring(s):gsub("'","'\\''").."'" end
+local function dq(s) return '"'..tostring(s):gsub("\\","\\\\"):gsub('"','\\"')..'"' end
+local function temp(name) return TEMP_ROOT..(IS_WIN and "\\" or "/")..name.."_"..math.random(999999)..".tmp" end
+local function run1(cmd) local h=io.popen(cmd.." 2>"..DEVNULL) if not h then return "" end local o=trim(h:read("*l") or "") h:close() return o end
+local function cmd_exists(c) return run1("command -v "..c)~="" end
+local function sleep_s(sec) if IS_WIN then os.execute('powershell -NoProfile -Command "Start-Sleep -Milliseconds '..math.max(1,math.floor(sec*1000))..'" >'..DEVNULL..' 2>&1') else os.execute("sleep "..sec) end end
+local function clear() if IS_WIN then os.execute("cls >"..DEVNULL.." 2>&1") end io.write("\27[3J\27[2J\27[H") io.flush() end
 
-local function run_line(cmd)
-    local h = io.popen(cmd .. " 2>" .. DEVNULL)
-    if not h then return "" end
-    local o = trim(h:read("*l") or "")
-    h:close(); return o
-end
+local function strip_ansi(s) return tostring(s or ""):gsub("\27%[[%d;:]*[A-Za-z]","") end
+local function width(s) return #strip_ansi(s) end
+local function pad(s,w) s=tostring(s or "") local n=width(s) return n>=w and s or s..string.rep(" ",w-n) end
+local function center(s,w) local n=width(s) local p=math.max(0,w-n) local l=math.floor(p/2) return string.rep(" ",l)..s..string.rep(" ",p-l) end
+local function trunc(s,w) s=strip_ansi(s) if #s<=w then return s end return s:sub(1,math.max(1,w-3)).."..." end
+local function cols() return math.max(72,tonumber(run1("tput cols")) or 90) end
 
-local function run_all(cmd)
-    local h = io.popen(cmd .. " 2>" .. DEVNULL)
-    if not h then return "" end
-    local o = h:read("*a") or ""
-    h:close(); return o
-end
+local E="\27[" local R=E.."0m" local B=E.."1m"
+local function tc(r,g,b) return E.."38;2;"..r..";"..g..";"..b.."m" end
+local C={blue1=tc(121,190,255),blue2=tc(82,154,245),blue3=tc(53,122,225),cyan=tc(0,217,255),white=tc(236,242,255),silver=tc(194,208,228),muted=tc(126,142,168),ok=tc(83,222,125),warn=tc(255,190,70),err=tc(255,92,92),border=tc(48,77,146),soft=tc(34,55,106)}
+local function paint(s,...) local codes=table.concat({...}) if codes=="" then return tostring(s or "") end return codes..tostring(s or "")..R end
 
-local function make_dir(path)
-    if IS_WIN then
-        os.execute('if not exist "' .. path .. '" mkdir "' .. path .. '" >' .. DEVNULL .. ' 2>&1')
-        return
-    end
-    os.execute("mkdir -p '" .. path:gsub("'", "'\\''") .. "' 2>" .. DEVNULL)
-end
-
-local function file_exists(path)
-    local h = io.open(path, "r")
-    if h then h:close(); return true end
-    return false
-end
-
-local function shell_escape(s)
-    if IS_WIN then return '"' .. tostring(s):gsub('"', '""') .. '"' end
-    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
-end
-
-local function temp_path(pfx)
-    return TEMP_ROOT .. (IS_WIN and "\\" or "/") .. pfx .. "_" .. math.random(999999) .. ".tmp"
-end
-
-local function cmd_exists(c) return run_line("command -v " .. c) ~= "" end
-
--- ─────────────────────────────────────────────────────────────────────────────
--- ANSI / UTF-8  WIDTH  SYSTEM
---
---   THE KEY FIX:  Lua's # operator counts *bytes*, not terminal columns.
---   ANSI escape sequences are multi-byte but 0 columns wide.
---   UTF-8 multi-byte chars are 2-4 bytes but typically 1 column wide.
---   This system always measures in *terminal columns*, never raw bytes.
--- ─────────────────────────────────────────────────────────────────────────────
-
--- Strip all ANSI/VT escape sequences from a string.
-local function strip_ansi(s)
-    -- Matches ESC [ ... m  (CSI sequences used for color/style)
-    -- and ESC [ ... H/J/K  (cursor movement — just in case)
-    return (tostring(s or "")):gsub("\27%[[%d;:]*[A-Za-z]", "")
-end
-
--- Count the number of terminal *columns* a string occupies.
--- Handles: ANSI escape codes (0 columns), multi-byte UTF-8 (1 column per codepoint).
--- Note: CJK wide chars are 2 columns in real terminals; we don't handle them here
--- because our content never contains them.  Everything we render is 1 col/codepoint.
-local function col_width(s)
-    local clean = strip_ansi(tostring(s or ""))
-    local w, i  = 0, 1
-    while i <= #clean do
-        local b = clean:byte(i)
-        -- Count one column per codepoint, skip continuation bytes
-        w = w + 1
-        if     b >= 0xF0 then i = i + 4   -- 4-byte sequence
-        elseif b >= 0xE0 then i = i + 3   -- 3-byte sequence  (box-drawing, block glyphs)
-        elseif b >= 0xC0 then i = i + 2   -- 2-byte sequence
-        else                   i = i + 1  -- ASCII
-        end
-    end
-    return w
-end
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Colors
--- ─────────────────────────────────────────────────────────────────────────────
-local E = "\27["
-local R = E .. "0m"
-
-local function tc(r, g, b) return E .. "38;2;" .. r .. ";" .. g .. ";" .. b .. "m" end
-local function bc(r, g, b) return E .. "48;2;" .. r .. ";" .. g .. ";" .. b .. "m" end
-local BOLD   = E .. "1m"
-local DIM    = E .. "2m"
-local ITALIC = E .. "3m"
-
--- Wrap text in ANSI color codes, always reset after.
-local function paint(text, ...)
-    local codes = table.concat({ ... })
-    if codes == "" then return tostring(text or "") end
-    return codes .. tostring(text or "") .. R
-end
-
-local C = {
-    -- Brand blues (logo gradient, top → bottom)
-    b1 = tc(110, 185, 255),
-    b2 = tc( 75, 150, 245),
-    b3 = tc( 50, 120, 225),
-    b4 = tc( 35,  95, 200),
-    b5 = tc( 22,  68, 168),
-    b6 = tc( 14,  47, 130),
-
-    -- Accent spectrum
-    cyan   = tc(  0, 218, 255),
-    teal   = tc(  0, 200, 178),
-    violet = tc(150, 110, 255),
-    gold   = tc(255, 198,  48),
-
-    -- Neutrals
-    white   = tc(238, 244, 255),
-    silver  = tc(195, 208, 228),
-    ash     = tc(148, 162, 182),
-    slate   = tc( 96, 112, 136),
-    coal    = tc( 54,  64,  82),
-
-    -- Semantic
-    ok   = tc( 66, 220, 118),
-    warn = tc(255, 188,  48),
-    err  = tc(255,  70,  70),
-
-    -- Border shades (for boxes)
-    bdr_lo  = tc( 36,  56, 106),
-    bdr_mid = tc( 52,  82, 148),
-    bdr_hi  = tc( 78, 118, 200),
-    bdr_ok  = tc( 28, 138,  66),
-    bdr_err = tc(136,  28,  28),
-    bdr_wrn = tc(138, 100,  18),
+local BANNER={
+" _      _   _ _   _ ________   __",
+"| |    | | | | \\ | |  ____\\ \\ / /",
+"| |    | | | |  \\| | |__   \\ V / ",
+"| |    | | | | . ` |  __|   > <  ",
+"| |____| |_| | |\\  | |____ / . \\ ",
+"|______|\\___/|_| \\_|______/_/ \\_\\",
 }
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Layout helpers  (all column-aware via col_width)
--- ─────────────────────────────────────────────────────────────────────────────
-local function term_cols()
-    return math.max(60, tonumber(run_line("tput cols")) or 80)
+local function header(step)
+  local w=cols()
+  clear()
+  io.write("\n")
+  local cc={C.blue1,C.blue2,C.blue3,C.blue2,C.blue1,C.blue2}
+  for i,line in ipairs(BANNER) do io.write(center(paint(line,B,cc[i] or C.blue1),w).."\n") end
+  io.write("\n"..center(paint("L U N E X   L I T E   C L O N E S",B,C.cyan),w).."\n")
+  if step and step~="" then io.write("\n"..center(paint("["..step.."]",B,C.silver),w).."\n") end
+  io.write("\n")
 end
 
--- Pad/trim a string to exactly `w` terminal columns.
--- Preserves ANSI codes; padding is via plain spaces appended after the content.
-local function pad_col(s, w)
-    s = tostring(s or "")
-    local cw = col_width(s)
-    if cw >= w then return s end          -- never truncate; caller must pass safe content
-    return s .. string.rep(" ", w - cw)
+local function box(title,rows,color)
+  local w=math.max(40,math.min(cols()-6,84))
+  local t=title and (" "..title.." ") or ""
+  io.write("  "..paint("+"..t..string.rep("-",math.max(0,w-#t)).."+",color or C.border).."\n")
+  for _,row in ipairs(rows) do io.write("  "..paint("|",color or C.border)..pad(row,w)..paint("|",color or C.border).."\n") end
+  io.write("  "..paint("+"..string.rep("-",w).."+",color or C.border).."\n")
 end
 
--- Center a string (which may contain ANSI codes) within `w` columns.
-local function center_col(s, w)
-    local cw  = col_width(tostring(s or ""))
-    local pad = math.max(0, w - cw)
-    return string.rep(" ", math.floor(pad / 2)) .. s .. string.rep(" ", math.ceil(pad / 2))
+local function status(step,title,lines,kind)
+  local color=kind=="ok" and C.ok or kind=="warn" and C.warn or kind=="err" and C.err or C.border
+  header(step)
+  local rows={"",paint(title,B,C.white),""}
+  for _,line in ipairs(lines or {}) do rows[#rows+1]=paint(line,C.silver) end
+  rows[#rows+1]=""
+  box(nil,rows,color)
+  io.write("\n")
 end
 
--- Truncate plain text to at most `w` visual columns, appending "…".
-local function trunc_plain(s, w)
-    s = strip_ansi(tostring(s or ""))
-    if col_width(s) <= w then return s end
-    -- Walk byte-by-byte counting codepoints until we reach w-1 columns
-    local out, cw, i = {}, 0, 1
-    while i <= #s and cw < w - 1 do
-        local b     = s:byte(i)
-        local bytes = b >= 0xF0 and 4 or b >= 0xE0 and 3 or b >= 0xC0 and 2 or 1
-        out[#out+1] = s:sub(i, i + bytes - 1)
-        cw = cw + 1
-        i  = i + bytes
-    end
-    return table.concat(out) .. "…"
+local function screen_license(msg)
+  header("LICENSE")
+  box(" License Key ",{
+    "",
+    paint("Enter your license key to continue.",B,C.white),
+    "",
+    paint("Use /key_information in the Discord bot if you need your key.",C.silver),
+    paint("Type q to exit.",C.muted),
+    "",
+    paint(msg or "Waiting for license key.",C.warn),
+    "",
+  },C.border)
+  io.write("\n")
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Logo  (toilet → figlet → built-in block-letter fallback)
---
---   Install in Termux for best results:
-local BUILTIN_LOGO = {
-    { C.b1, " ██╗      ██╗   ██╗███╗   ██╗███████╗██╗  ██╗ " },
-    { C.b2, " ██║      ██║   ██║████╗  ██║██╔════╝╚██╗██╔╝ " },
-    { C.b3, " ██║      ██║   ██║██╔██╗ ██║█████╗   ╚███╔╝  " },
-    { C.b4, " ██║      ██║   ██║██║╚██╗██║██╔══╝   ██╔██╗  " },
-    { C.b5, " ███████╗ ╚██████╔╝██║ ╚████║███████╗██╔╝╚██╗ " },
-    { C.b6, " ╚══════╝  ╚═════╝ ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ " },
-    { C.b5, "            L U N E X   A U T H   S U I T E            " },
-}
-
-local function split_lines(s)
-    local lines = {}
-    for ln in (s .. "\n"):gmatch("([^\n]*)\n") do lines[#lines+1] = ln end
-    while #lines > 0 and not lines[#lines]:match("%S") do lines[#lines] = nil end
-    return lines
+local function screen_code(device,msg)
+  header("GET TERMUX CODE")
+  box(" Device Verification ",{
+    "",
+    paint("Device: "..trunc(device or "Unknown Device",62),B,C.white),
+    "",
+    paint("Run /get-termux-code in the Discord bot and paste the code here.",C.silver),
+    paint("Type q to exit.",C.muted),
+    "",
+    paint(msg or "Waiting for Termux code.",C.warn),
+    "",
+  },C.border)
+  io.write("\n")
 end
 
-local LOGO_CACHE, LOGO_PRE_COLORED = nil, false
-
-local function build_logo_cache()
-    LOGO_CACHE      = BUILTIN_LOGO
-    LOGO_PRE_COLORED = false
+local function ask(label)
+  io.write(paint("  > "..label..": ",B,C.cyan)) io.flush()
+  local v=trim(io.read("*l") or "")
+  if v:lower()=="q" then clear() os.exit(0) end
+  return v
 end
 
-local function render_logo(w)
-    if not LOGO_CACHE then build_logo_cache() end
-    local colors = { C.b1, C.b2, C.b3, C.b4, C.b5, C.b6 }
+local function tool_api(spec)
+  local key,base,user,pass=spec:match("^([^:]+):(https?://.+):([^:]+):([^:]+)$")
+  if not key then error("Invalid LunexToolAPI format") end
+  return {key=key,base=base:gsub("/+$",""),user=user,pass=pass}
+end
+local API=tool_api(TOOL_SPEC)
 
-    if LOGO_PRE_COLORED then
-        -- lolcat already embedded ANSI codes; just center by stripped width
-        for _, line in ipairs(LOGO_CACHE) do
-            io.write(center_col(line, w) .. R .. "\n")
-        end
-    elseif type(LOGO_CACHE[1]) == "table" then
-        -- Built-in: each entry is { color, text }
-        for i, row in ipairs(LOGO_CACHE) do
-            local col = row[1] or colors[((i-1) % #colors) + 1]
-            io.write(center_col(paint(row[2], BOLD, col), w) .. "\n")
-        end
-    else
-        -- figlet/toilet plain text: apply our blue gradient
-        for i, line in ipairs(LOGO_CACHE) do
-            local col = colors[((i-1) % #colors) + 1]
-            io.write(center_col(paint(line, BOLD, col), w) .. "\n")
-        end
-    end
+local function request(method,url,headers,body,opt)
+  opt=opt or {}
+  mkdir(TEMP_ROOT)
+  local rp,ep,bp=temp("resp"),temp("err"),body and temp("body") or nil
+  if bp then local h=io.open(bp,"wb") if not h then return nil,"","failed body" end h:write(body) h:close() end
+  local parts={IS_WIN and "curl.exe" or "curl","-sS","--ipv4","--http1.1","--connect-timeout",tostring(opt.connect or 10),"--max-time",tostring(opt.max or 60)}
+  if opt.follow then parts[#parts+1]="-L" end
+  parts[#parts+1]="-o" parts[#parts+1]=esc(rp) parts[#parts+1]="-w" parts[#parts+1]=esc("%{http_code}") parts[#parts+1]="-X" parts[#parts+1]=method
+  if opt.auth then parts[#parts+1]="-u" parts[#parts+1]=esc(opt.auth) end
+  for _,h in ipairs(headers or {}) do parts[#parts+1]="-H" parts[#parts+1]=esc(h) end
+  if bp then parts[#parts+1]="--data-binary" parts[#parts+1]=esc("@"..bp) end
+  parts[#parts+1]=esc(url)
+  local p=io.popen(table.concat(parts," ").." 2>"..esc(ep))
+  local sc=tonumber((p and p:read("*a") or "0"):match("%d+")) or 0
+  if p then p:close() end
+  local body_txt,err_txt="",""
+  local rh=io.open(rp,"rb") if rh then body_txt=rh:read("*a") or "" rh:close() end
+  local eh=io.open(ep,"rb") if eh then err_txt=eh:read("*a") or "" eh:close() end
+  os.remove(rp) os.remove(ep) if bp then os.remove(bp) end
+  if sc==0 then return nil,body_txt,err_txt end
+  return sc,body_txt,err_txt
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Box drawing
--- ─────────────────────────────────────────────────────────────────────────────
-local BOX = {
-    -- double-line  (primary content panels)
-    D = { tl="╔", tr="╗", bl="╚", br="╝", h="═", v="║", sl="╠", sr="╣" },
-    -- single-line  (note/hint strips)
-    S = { tl="┌", tr="┐", bl="└", br="┘", h="─", v="│", sl="├", sr="┤" },
-    -- rounded      (soft secondary panels)
-    R = { tl="╭", tr="╮", bl="╰", br="╯", h="─", v="│", sl="├", sr="┤" },
-}
-
--- Draw a complete box, writing directly to stdout.
--- `inner`  : number of *terminal columns* between the two vertical walls
--- `title`  : plain-text title (nil = no title gap in top border)
--- `rows`   : list of strings (may contain ANSI codes)
--- `bc`     : border color code string
--- `bstyle` : "D", "S", or "R"
--- `margin` : number of leading spaces before each line
-local function draw_box_raw(inner, title, rows, bc, bstyle, margin)
-    local b   = BOX[bstyle or "D"] or BOX.D
-    local pad = string.rep(" ", margin or 2)
-    bc = bc or C.bdr_mid
-
-    -- ── Top border ──────────────────────────────────────────────────────────
-    local title_str = title and (" " .. title .. " ") or ""
-    -- title_str is always plain ASCII so col_width == #title_str, but use
-    -- col_width to stay correct if someone passes a Unicode title later.
-    local title_cw  = col_width(title_str)
-    local h_fill    = math.max(0, inner - title_cw)
-    io.write(pad .. paint(b.tl .. title_str .. string.rep(b.h, h_fill) .. b.tr, bc) .. "\n")
-
-    -- ── Content rows ─────────────────────────────────────────────────────────
-    for _, row in ipairs(rows) do
-        local content = tostring(row or "")
-        -- pad_col pads based on col_width (ANSI-aware, UTF-8-aware)
-        io.write(pad .. paint(b.v, bc) .. pad_col(content, inner) .. paint(b.v, bc) .. "\n")
-    end
-
-    -- ── Bottom border ────────────────────────────────────────────────────────
-    io.write(pad .. paint(b.bl .. string.rep(b.h, inner) .. b.br, bc) .. "\n")
+local function api_post(route,payload)
+  local sc,body=request("POST",API.base..route,{
+    "Accept: application/json",
+    "Content-Type: application/json",
+    "X-Lunex-Tool-Api-Key: "..API.key,
+  },json.encode(payload),{auth=API.user..":"..API.pass,max=20})
+  if not sc then return nil,{message="Server unavailable."} end
+  local parsed=json.decode(body) if type(parsed)~="table" then parsed={} end
+  return sc,parsed
 end
 
--- High-level wrapper that auto-calculates inner width from terminal.
-local function draw_box(title, rows, bc, bstyle, margin)
-    local w     = term_cols()
-    local m     = margin or 2
-    local inner = math.max(34, math.min(w - m * 2 - 2, 78))
-    draw_box_raw(inner, title, rows, bc, bstyle, m)
+local function check_license(key)
+  local sc,r=api_post("/api/termux/license-status",{licenseKey=key})
+  if not sc then return "server",r.message or "Server unavailable." end
+  if sc==200 then return "valid",r.message or "Valid." end
+  if (r.code or "")=="UNAUTHORIZED" or sc>=500 then return "server",r.message or "Server unavailable." end
+  return "invalid",r.message or "Invalid."
+end
+local function auto_login(key,hwid,label)
+  local sc,r=api_post("/api/termux/auto-login",{licenseKey=key,hwid=hwid,hwidLabel=label})
+  if not sc then return "server",r.message or "Server unavailable." end
+  if sc==200 then return "valid",r.message or "Success" end
+  if (r.code or "")=="AUTO_LOGIN_FAILED" then return "failed",r.message or "Auto login failed." end
+  if (r.code or "")=="UNAUTHORIZED" or sc>=500 then return "server",r.message or "Server unavailable." end
+  return "invalid",r.message or "Invalid."
+end
+local function validate_code(key,code,hwid,label)
+  local sc,r=api_post("/api/termux/validate",{licenseKey=key,termuxCode=code,hwid=hwid,hwidLabel=label})
+  if not sc then return "server",r.message or "Server unavailable." end
+  if sc==200 then return "valid",r.message or "Success" end
+  local c=r.code or ""
+  if c=="INVALID_LICENSE" then return "invalid_license",r.message or "Invalid." end
+  if c=="EXPIRED" then return "expired",r.message or "Expired." end
+  if c=="HWID_LIMIT_REACHED" then return "hwid_limit_reached",r.message or "HWID limit reached." end
+  if c=="UNAUTHORIZED" or sc>=500 then return "server",r.message or "Server unavailable." end
+  return "invalid",r.message or "Invalid."
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Header
--- ─────────────────────────────────────────────────────────────────────────────
-local function clear_screen()
-    if IS_WIN then os.execute("cls >" .. DEVNULL .. " 2>&1") end
-    io.write("\027[3J\027[2J\027[H"); io.flush()
-end
-
-local function draw_header(step)
-    local w = term_cols()
-    clear_screen()
-    io.write("\n")
-    render_logo(w)
-    io.write("\n")
-
-    -- Tagline
-    local tag = paint("▸ ", C.bdr_mid)
-              .. paint("L U N E X   ·   L I T E  C L O N E S   ·   V E R S I O N 1.0.0", C.coal)
-              .. paint(" ◂", C.bdr_mid)
-    io.write(center_col(tag, w) .. "\n\n")
-
-    -- Rule
-    local rule_w = math.min(w - 8, 66)
-    io.write(center_col(paint(string.rep("─", rule_w), C.bdr_lo), w) .. "\n")
-
-    -- Step badge
-    if step and step ~= "" then
-        io.write("\n")
-        local badge = "  " .. step .. "  "
-        io.write(center_col(paint(badge, BOLD, C.cyan), w) .. "\n")
-    end
-    io.write("\n")
-end
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Symbols
--- ─────────────────────────────────────────────────────────────────────────────
---  Each symbol string has a specific col_width; keep them consistent so that
---  content lines line up cleanly inside the box.
-local SYM = {
-    ok     = paint(" ✔ ", BOLD, C.ok),    -- 3 cols
-    err    = paint(" ✘ ", BOLD, C.err),   -- 3 cols
-    warn   = paint(" ⚠ ", BOLD, C.warn),  -- 3 cols
-    wait   = paint(" ◌ ", C.cyan),        -- 3 cols
-    info   = paint(" ◈ ", C.cyan),        -- 3 cols
-    bullet = paint(" • ", C.slate),       -- 3 cols
-    key    = paint(" ⬡ ", C.teal),        -- 3 cols
-    arrow  = paint(" › ", BOLD, C.b2),    -- 3 cols
-}
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Screen layouts
--- ─────────────────────────────────────────────────────────────────────────────
-local function S(sym, text_parts)
-    -- Build a single row: sym  +  concatenated text parts  (already painted)
-    return sym .. table.concat(text_parts)
-end
-
-local function show_license_screen(notice)
-    local problem = notice and notice ~= "Waiting for license key."
-    draw_header("LICENSE AUTHENTICATION")
-    draw_box(" License Key ", {
-        "",
-        S(SYM.key,  { paint("Enter your license key to continue.", BOLD, C.white) }),
-        "",
-        S(SYM.bullet, { paint("Use ", C.ash), paint("/key_information", BOLD, C.cyan), paint(" in the Discord bot.", C.ash) }),
-        S(SYM.bullet, { paint("Paste the key at the prompt below.", C.ash) }),
-        "",
-        S(problem and SYM.warn or SYM.wait,
-          { paint(notice or "Waiting for license key.", problem and C.warn or C.silver) }),
-        "",
-    }, C.bdr_mid, "D")
-
-    io.write("\n")
-
-    draw_box(nil, {
-        S(SYM.bullet, { paint("Saved sessions are checked automatically on startup.", C.slate) }),
-        S(SYM.bullet, { paint("If auto-login fails, re-enter your license key.", C.slate) }),
-    }, C.bdr_lo, "R")
-
-    io.write("\n")
-end
-
-local function show_code_screen(device_label, notice)
-    local problem = notice and notice ~= "Waiting for Termux code."
-    draw_header("DEVICE VERIFICATION")
-    draw_box(" Termux Code ", {
-        "",
-        S(SYM.key,  { paint("Device  ", C.ash), paint(trunc_plain(device_label or "Unknown", 54), BOLD, C.white) }),
-        "",
-        S(SYM.bullet, { paint("Run ", C.ash), paint("/get-termux-code", BOLD, C.cyan), paint(" in the Discord bot.", C.ash) }),
-        S(SYM.bullet, { paint("Paste the code sent to your DMs.", C.ash) }),
-        "",
-        S(problem and SYM.warn or SYM.wait,
-          { paint(notice or "Waiting for Termux code.", problem and C.warn or C.silver) }),
-        "",
-    }, C.bdr_mid, "D")
-
-    io.write("\n")
-
-    draw_box(nil, {
-        S(SYM.bullet, { paint("This code is tied to your device HWID.", C.slate) }),
-        S(SYM.bullet, { paint("If the code expires, run /get-termux-code again.", C.slate) }),
-    }, C.bdr_lo, "R")
-
-    io.write("\n")
-end
-
-local function show_status_screen(title, message, kind)
-    -- kind: "ok" | "err" | "warn" | nil (info/default)
-    local icon = ({ ok=SYM.ok, err=SYM.err, warn=SYM.warn })[kind] or SYM.info
-    local bdr  = ({ ok=C.bdr_ok, err=C.bdr_err, warn=C.bdr_wrn })[kind] or C.bdr_hi
-
-    draw_header(title:upper())
-    draw_box(" " .. title .. " ", {
-        "",
-        S(icon, { paint(message or "", BOLD, C.white) }),
-        "",
-    }, bdr, "D")
-    io.write("\n")
-end
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Prompt
--- ─────────────────────────────────────────────────────────────────────────────
-local function prompt(label)
-    io.write("\n" .. SYM.arrow .. paint(label, BOLD, C.white) .. "  " .. paint("▶  ", C.bdr_mid))
-    io.flush()
-    return trim(io.read("*l") or "")
-end
-
-local function print_success()
-    show_status_screen("Authenticated", "Verification complete. Welcome to Lunex.", "ok")
-    print("Success")
-end
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Crypto  (SHA-256 via openssl / PowerShell)
--- ─────────────────────────────────────────────────────────────────────────────
 local function sha256(value)
-    local path = temp_path("lunex_sha")
-    local h = io.open(path, "wb")
-    if not h then return "" end
-    h:write(value); h:close()
-    local digest
-    if IS_WIN then
-        digest = run_line("powershell -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 " ..
-            shell_escape(path) .. ").Hash\"")
-    else
-        digest = run_line("openssl dgst -sha256 < " .. shell_escape(path) .. " | awk '{print $NF}'")
-    end
-    os.remove(path)
-    return trim(digest):lower()
+  local p=temp("sha") local h=io.open(p,"wb") if not h then return "" end h:write(value) h:close()
+  local out=IS_WIN and run1("powershell -NoProfile -Command \"(Get-FileHash -Algorithm SHA256 "..esc(p)..").Hash\"") or run1("openssl dgst -sha256 < "..esc(p).." | awk '{print $NF}'")
+  os.remove(p) return trim(out):lower()
 end
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Device fingerprint
--- ─────────────────────────────────────────────────────────────────────────────
-local function getprop(n) return run_line("getprop " .. n) end
-
+local function getprop(n) return run1("getprop "..n) end
 local function device_identity()
-    local parts, captured = {}, {}
-    local props = {
-        "ro.serialno","ro.boot.serialno","ro.product.manufacturer",
-        "ro.product.brand","ro.product.model","ro.product.device",
-        "ro.product.name","ro.build.fingerprint","ro.hardware",
-    }
-    if cmd_exists("getprop") then
-        for _, n in ipairs(props) do
-            local v = getprop(n)
-            if v ~= "" then captured[n] = v; parts[#parts+1] = n .. "=" .. v end
-        end
+  local parts,captured={},{}
+  local props={"ro.serialno","ro.boot.serialno","ro.product.manufacturer","ro.product.brand","ro.product.model","ro.product.device","ro.product.name","ro.build.fingerprint","ro.hardware"}
+  if cmd_exists("getprop") then for _,n in ipairs(props) do local v=getprop(n) if v~="" then captured[n]=v parts[#parts+1]=n.."="..v end end end
+  for _,p in ipairs({"/etc/machine-id","/var/lib/dbus/machine-id"}) do local h=io.open(p,"r") if h then local m=trim(h:read("*l") or "") h:close() if m~="" then parts[#parts+1]="machine-id="..m end end end
+  parts[#parts+1]="node="..run1("hostname") parts[#parts+1]="system="..run1("uname -s") parts[#parts+1]="machine="..run1("uname -m")
+  local hwid=sha256(table.concat(parts,"\n")):upper():sub(1,32)
+  local mfr=captured["ro.product.manufacturer"] or captured["ro.product.brand"] or run1("uname -s")
+  local mdl=captured["ro.product.model"] or captured["ro.product.device"] or run1("hostname") or "Device"
+  local label=(mfr~="" and mdl~="") and (mfr.." "..mdl) or (mfr~="" and mfr) or (mdl~="" and mdl) or "Unknown Device"
+  return hwid,label:sub(1,80)
+end
+
+local function load_license()
+  mkdir(ROOT_DIR)
+  if not exists(LICENSE_PATH) then return nil end
+  local h=io.open(LICENSE_PATH,"r") if not h then return nil end
+  local raw=h:read("*a") h:close()
+  local d=json.decode(raw) if type(d)~="table" then os.remove(LICENSE_PATH) return nil end
+  local k=trim(d.license_key or ""):gsub("%s",""):upper()
+  if k=="" then os.remove(LICENSE_PATH) return nil end
+  return k
+end
+local function save_license(key,hwid,label)
+  mkdir(ROOT_DIR)
+  local h=io.open(LICENSE_PATH,"w") if not h then return end
+  h:write(json.encode({license_key=trim(key):gsub("%s",""):upper(),hwid=hwid,device_label=label,saved_at=os.time()}))
+  h:close()
+end
+
+local function urlencode(s) return (tostring(s):gsub("[^%w%-%.%_%~]",function(c) return ("%%%02X"):format(c:byte()) end)) end
+local function qstr(t) local p={} for k,v in pairs(t) do p[#p+1]=urlencode(k).."="..urlencode(v) end return table.concat(p,"&") end
+local function gf_wt(token) return sha256(GF_UA.."::"..GF_LANG.."::"..token.."::"..math.floor(os.time()/14400).."::"..GF_SFXWT) end
+local function gf_kind(sc,r,errtxt)
+  local st=tostring(r and r.status or ""):lower()
+  local msg=tostring(r and r.message or ""):lower()
+  local err=tostring(errtxt or ""):lower()
+  if sc==429 or st:find("ratelimit",1,true) or msg:find("ratelimit",1,true) or err:find("429",1,true) then return "rate" end
+  return "failed"
+end
+local function gf_req(method,url,token,wt,body)
+  local hdr={"User-Agent: "..GF_UA}
+  if token then hdr[#hdr+1]="Authorization: Bearer "..token end
+  if wt then hdr[#hdr+1]="X-Website-Token: "..wt hdr[#hdr+1]="X-BL: "..GF_LANG end
+  if body then hdr[#hdr+1]="Content-Type: application/json" end
+  local sc,raw,err=request(method,url,hdr,body and json.encode(body) or nil,{max=30})
+  if not sc then return nil,nil,err end
+  local parsed=json.decode(raw) if type(parsed)~="table" then parsed={} end
+  return sc,parsed,err
+end
+local function fetch_catalog()
+  local sc,acc,err=gf_req("POST",GF_API.."/accounts",nil,nil,{})
+  if not sc or type(acc.data)~="table" or not acc.data.token then return nil,gf_kind(sc or 0,acc or {},err) end
+  local token=tostring(acc.data.token) local wt=gf_wt(token) local pwhash=sha256(GF_PASS)
+  local url=GF_API.."/contents/"..GF_CODE.."?"..qstr({password=pwhash,page=1,pageSize=200,sortField="name",sortDirection=1})
+  local fsc,folder,ferr=gf_req("GET",url,token,wt,nil)
+  if not fsc or type(folder.data)~="table" then return nil,gf_kind(fsc or 0,folder or {},ferr) end
+  local items={}
+  for _,child in pairs(folder.data.children or {}) do
+    if child.type=="file" then
+      local name=tostring(child.name or "")
+      if name:lower():match("%.apk$") then items[#items+1]={name=name,size=tonumber(child.size) or 0,link=tostring(child.link or "")} end
     end
-    for _, p in ipairs({ "/etc/machine-id", "/var/lib/dbus/machine-id" }) do
-        local h = io.open(p, "r")
-        if h then
-            local mid = trim(h:read("*l") or ""); h:close()
-            if mid ~= "" then parts[#parts+1] = "machine-id=" .. mid end
-        end
-    end
-    parts[#parts+1] = "node="    .. run_line("hostname")
-    parts[#parts+1] = "system="  .. run_line("uname -s")
-    parts[#parts+1] = "machine=" .. run_line("uname -m")
-
-    local hwid  = sha256(table.concat(parts, "\n")):upper():sub(1, 32)
-    local mfr   = captured["ro.product.manufacturer"] or captured["ro.product.brand"] or run_line("uname -s")
-    local model = captured["ro.product.model"] or captured["ro.product.device"] or run_line("hostname") or "Device"
-    local label = (mfr ~= "" and model ~= "") and (mfr .. " " .. model)
-                or (mfr ~= "" and mfr) or (model ~= "" and model) or "Unknown Device"
-    return hwid, label:sub(1, 80)
+  end
+  table.sort(items,function(a,b) return a.name:lower()<b.name:lower() end)
+  return {token=token,items=items}
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- License storage
--- ─────────────────────────────────────────────────────────────────────────────
-local function load_saved_license()
-    make_dir(LUNEX_ROOT)
-    if not file_exists(LICENSE_PATH) then return nil end
-    local h = io.open(LICENSE_PATH, "r")
-    if not h then return nil end
-    local raw = h:read("*a"); h:close()
-    local parsed = json.decode(raw)
-    if type(parsed) ~= "table" then os.remove(LICENSE_PATH); return nil end
-    local lk = trim(parsed.license_key or ""):gsub("%s",""):upper()
-    if lk == "" then os.remove(LICENSE_PATH); return nil end
-    return lk
+local function safe_name(s) return tostring(s or ""):gsub('[\\/:*?"<>|]',"_") end
+local function format_size(n) n=tonumber(n) or 0 local u={"B","KB","MB","GB"} local i=1 while n>=1024 and i<#u do n=n/1024 i=i+1 end if i==1 then return math.floor(n).." "..u[i] end return ("%.1f %s"):format(n,u[i]) end
+
+local function download_item(session,item)
+  mkdir(DOWNLOAD_DIR)
+  local dest=DOWNLOAD_DIR..(IS_WIN and "\\" or "/")..safe_name(item.name)
+  os.remove(dest)
+  local ep=temp("dlerr")
+  local parts={
+    IS_WIN and "curl.exe" or "curl",
+    "-sS","--ipv4","--http1.1",
+    "--connect-timeout","10",
+    "--max-time","300",
+    "-L",
+    "-o",esc(dest),
+    "-w",esc("%{http_code}"),
+    "-H",esc("User-Agent: "..GF_UA),
+    "-H",esc("Cookie: accountToken="..session.token),
+    "-H",esc("Referer: "..GF_PAGE),
+    esc(item.link),
+  }
+  local p=io.popen(table.concat(parts," ").." 2>"..esc(ep))
+  local sc=tonumber((p and p:read("*a") or "0"):match("%d+")) or 0
+  if p then p:close() end
+  local err=""
+  local eh=io.open(ep,"rb") if eh then err=eh:read("*a") or "" eh:close() end
+  os.remove(ep)
+  if sc==0 then return "failed",nil,trim(err)~="" and trim(err) or "Download failed." end
+  if sc==429 then os.remove(dest) return "rate",nil,"Rate limited." end
+  if sc<200 or sc>=400 then os.remove(dest) return "failed",nil,"HTTP "..tostring(sc) end
+  local h=io.open(dest,"rb") if not h then return "failed",nil,"Downloaded file missing." end
+  local size=h:seek("end") h:close()
+  if not size or size<=0 then os.remove(dest) return "failed",nil,"Downloaded file is empty." end
+  return "ok",dest,nil
 end
 
-local function save_license(lk, hwid, label)
-    make_dir(LUNEX_ROOT)
-    local h = io.open(LICENSE_PATH, "w")
-    if not h then return end
-    h:write(json.encode({ license_key=trim(lk):gsub("%s",""):upper(), hwid=hwid, device_label=label, saved_at=os.time() }))
-    h:close()
+local function root_run(cmd)
+  if not cmd_exists("su") then return false,"Root unavailable." end
+  local p=io.popen("su -c "..dq(cmd).." 2>&1")
+  local out=p and (p:read("*a") or "") or ""
+  if p then p:close() end
+  out=trim(out)
+  if out:lower():find("success",1,true) then return true,out end
+  return false,(out~="" and out or "Command failed.")
+end
+local function install_apk(path)
+  local tries={
+    "cmd package install -r --user 0 "..esc(path),
+    "pm install -r --user 0 "..esc(path),
+    "cmd package install -r "..esc(path),
+    "pm install -r "..esc(path),
+  }
+  local last="Install/update failed."
+  for _,cmd in ipairs(tries) do local ok,out=root_run(cmd) if ok then return true,out end last=out or last end
+  return false,last
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- HTTP  (curl)
--- ─────────────────────────────────────────────────────────────────────────────
-local function parse_tool_api(spec)
-    local key, base, user, pass = spec:match("^([^:]+):(https?://.+):([^:]+):([^:]+)$")
-    if not key then error("Invalid LunexToolAPI format") end
-    return { key=key, base=base:gsub("/+$",""), username=user, password=pass }
+local READ_KEY_CMD=[[bash -c 'old=$(stty -g </dev/tty 2>/dev/null); stty -icanon -echo min 1 time 0 </dev/tty 2>/dev/null; IFS= read -r -n1 a </dev/tty 2>/dev/null; IFS= read -r -n6 -t 0.02 b </dev/tty 2>/dev/null; [ -n "$old" ] && stty "$old" </dev/tty 2>/dev/null; printf "%s" "$a$b"' | od -An -tx1 | tr -d " \n\r"]]
+local function read_key()
+  if IS_WIN then
+    io.write(paint("  Command [w/s/space/enter/a/q/1/2]: ",C.muted)) io.flush()
+    local v=(io.read("*l") or ""):lower()
+    if v=="w" then return "UP" end
+    if v=="s" then return "DOWN" end
+    if v=="space" then return "SPACE" end
+    if v=="a" then return "A" end
+    if v=="q" then return "Q" end
+    if v=="1" then return "ONE" end
+    if v=="2" then return "TWO" end
+    return "ENTER"
+  end
+  local h=io.popen(READ_KEY_CMD) if not h then return "" end
+  local hex=trim((h:read("*a") or ""):lower()) h:close()
+  if hex=="1b5b41" then return "UP" end
+  if hex=="1b5b42" then return "DOWN" end
+  if hex=="20" then return "SPACE" end
+  if hex=="61" or hex=="41" then return "A" end
+  if hex=="71" or hex=="51" then return "Q" end
+  if hex=="31" then return "ONE" end
+  if hex=="32" then return "TWO" end
+  if hex=="0d" or hex=="0a" or hex=="" then return "ENTER" end
+  return ""
 end
 
-local API = parse_tool_api(LUNEX_TOOL_API)
-
-local function http_post(route, payload)
-    make_dir(TEMP_ROOT)
-    local rp = temp_path("lunex_resp")
-    local ep = temp_path("lunex_err")
-    local bp = temp_path("lunex_body")
-
-    local bh = io.open(bp, "wb")
-    if not bh then return nil, { message = "Server unavailable." } end
-    bh:write(json.encode(payload)); bh:close()
-
-    local curl = IS_WIN and "curl.exe" or "curl"
-    local cmd  = table.concat({
-        curl, "-sS", "--ipv4", "--http1.1",
-        "--connect-timeout", "10", "--max-time", "20", "--retry", "2", "--retry-delay", "1",
-        "-u",  shell_escape(API.username .. ":" .. API.password),
-        "-H",  shell_escape("X-Lunex-Tool-Api-Key: " .. API.key),
-        "-H",  shell_escape("Accept: application/json"),
-        "-H",  shell_escape("Content-Type: application/json"),
-        "-o",  shell_escape(rp),
-        "-w",  shell_escape("%{http_code}"),
-        "-X",  "POST",
-        "--data-binary", shell_escape("@" .. bp),
-        shell_escape(API.base .. route),
-    }, " ")
-
-    local proc = io.popen(cmd .. " 2>" .. shell_escape(ep))
-    local sc   = tonumber((proc and proc:read("*a") or "0"):match("%d+")) or 0
-    if proc then proc:close() end
-
-    local body = ""
-    local rh = io.open(rp, "r")
-    if rh then body = rh:read("*a") or ""; rh:close() end
-    os.remove(rp); os.remove(ep); os.remove(bp)
-
-    if sc == 0 then return nil, { message = "Server unavailable." } end
-    local parsed = json.decode(body)
-    if type(parsed) ~= "table" then parsed = {} end
-    return sc, parsed
+local function menu_screen(cursor,notice)
+  header("MAIN MENU")
+  local rows={"",paint("Choose what you want to do next.",C.silver),paint("Press q to exit.",C.muted),""}
+  if notice and notice~="" then rows[#rows+1]=paint(notice,C.warn) rows[#rows+1]="" end
+  local opts={"1. Download & Install/Update Clones","2. Auto Clones Position (SOON)"}
+  for i,opt in ipairs(opts) do rows[#rows+1]=paint((cursor==i and "> " or "  ")..opt,B,cursor==i and C.cyan or C.white) end
+  rows[#rows+1]="" rows[#rows+1]=paint("Enter select   Up/Down move   q exit",C.muted)
+  box(" Lunex Menu ",rows,C.border)
+  io.write("\n")
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Auth calls
--- ─────────────────────────────────────────────────────────────────────────────
-local function check_license(lk)
-    local sc, r = http_post("/api/termux/license-status", { licenseKey = lk })
-    if not sc then return "server", r.message or "Server unavailable." end
-    if sc == 200 then return "valid", r.message or "Valid." end
-    if (r.code or "") == "UNAUTHORIZED" or sc >= 500 then return "server", r.message or "Server unavailable." end
-    return "invalid", r.message or "Invalid."
+local function catalog_screen(items,selected,cursor,scroll,notice)
+  header("CLONES CATALOG")
+  local rows={"",paint("Folder: "..DOWNLOAD_DIR,C.silver),paint("Choose what should be installed or updated.",C.silver),paint("All clones are still downloaded to reduce expiry risk.",C.silver),paint("Press q to go back.",C.muted),""}
+  if notice and notice~="" then rows[#rows+1]=paint(notice,C.warn) rows[#rows+1]="" end
+  local vis=8 local last=math.min(#items,scroll+vis-1)
+  for i=scroll,last do
+    local item=items[i] local mark=selected[i] and "[x]" or "[ ]" local gap=math.max(1,70-#trunc(item.name,52)-#format_size(item.size))
+    rows[#rows+1]=paint((cursor==i and "> " or "  ")..mark.." "..trunc(item.name,52)..string.rep(" ",gap)..format_size(item.size),B,cursor==i and C.cyan or C.white)
+  end
+  if last<#items then rows[#rows+1]=paint("... "..tostring(#items-last).." more clones below ...",C.muted) end
+  local base=#items
+  rows[#rows+1]="" rows[#rows+1]=paint((cursor==base+1 and "> " or "  ").."[ Start Download & Updating Clones ]",B,cursor==base+1 and C.cyan or C.white)
+  rows[#rows+1]=paint((cursor==base+2 and "> " or "  ").."[ Go Back ]",B,cursor==base+2 and C.cyan or C.white)
+  rows[#rows+1]="" rows[#rows+1]=paint("Enter toggle/select   Space toggle   A all   q back",C.muted)
+  box(" Clones Catalog ",rows,C.border)
+  io.write("\n")
 end
 
-local function auto_login(lk, hwid, label)
-    local sc, r = http_post("/api/termux/auto-login", { licenseKey=lk, hwid=hwid, hwidLabel=label })
-    if not sc then return "server", r.message or "Server unavailable." end
-    if sc == 200 then return "valid", r.message or "Success" end
-    if (r.code or "") == "AUTO_LOGIN_FAILED" then return "failed", r.message or "Auto login failed." end
-    if (r.code or "") == "UNAUTHORIZED" or sc >= 500 then return "server", r.message or "Server unavailable." end
-    return "invalid", r.message or "Invalid."
+local function progress_screen(stage,name,idx,total,detail,kind)
+  status("CLONE TASK",stage,{
+    "Clone "..idx.." / "..total,
+    trunc(name,70),
+    detail or "",
+  },kind)
 end
 
-local function validate_code(lk, code, hwid, label)
-    local sc, r = http_post("/api/termux/validate", { licenseKey=lk, termuxCode=code, hwid=hwid, hwidLabel=label })
-    if not sc then return "server", r.message or "Server unavailable." end
-    if sc == 200 then return "valid", r.message or "Success" end
-    local rc = r.code or ""
-    if rc == "INVALID_LICENSE"    then return "invalid_license",    r.message or "Invalid." end
-    if rc == "EXPIRED"            then return "expired",            r.message or "Expired." end
-    if rc == "HWID_LIMIT_REACHED" then return "hwid_limit_reached", r.message or "HWID limit reached." end
-    if rc == "UNAUTHORIZED" or sc >= 500 then return "server", r.message or "Server unavailable." end
-    return "invalid", r.message or "Invalid."
+local function summary_screen(results)
+  header("SUMMARY")
+  local rows={"",paint("All processed files were cleaned after each task.",C.silver),paint("Folder used: "..DOWNLOAD_DIR,C.silver),""}
+  for _,r in ipairs(results) do
+    local color=r.status=="Installed/Updated" and C.ok or r.status=="Downloaded" and C.cyan or r.status=="Rate limited" and C.warn or C.err
+    rows[#rows+1]=paint(r.status.."  "..trunc(r.name,62),B,color)
+    if r.detail and r.detail~="" then rows[#rows+1]=paint("   "..trunc(r.detail,70),C.muted) end
+  end
+  rows[#rows+1]="" rows[#rows+1]=paint("Press Enter to return to the menu.",C.muted)
+  box(" Task Results ",rows,C.border) io.write("\n") io.read("*l")
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Main
--- ─────────────────────────────────────────────────────────────────────────────
-local function main()
-    make_dir(LUNEX_ROOT)
-    make_dir(TEMP_ROOT)
-
-    local hwid, device_label = device_identity()
-    local saved = load_saved_license()
-    local lic_notice = "Waiting for license key."
-
-    -- Try auto-login with saved key
-    if saved then
-        show_status_screen("Authentication", "Verifying saved session…", nil)
-        local status = auto_login(saved, hwid, device_label)
-        if status == "valid"  then print_success(); return end
-        if status == "server" then
-            show_status_screen("Unavailable", "Cannot reach the server. Try again later.", "err"); return
-        end
-        os.remove(LICENSE_PATH)
-        lic_notice = "Saved session expired — please enter your license key again."
-    end
-
-    -- License key loop
-    while true do
-        show_license_screen(lic_notice)
-        local lk = prompt("License key"):upper()
-
-        if lk == "" then
-            lic_notice = "No license key entered. Please try again."
+local function process_items(session,items,selected)
+  local results={}
+  for i,item in ipairs(items) do
+    progress_screen("Downloading",item.name,i,#items,"Preparing clone package...",nil)
+    local dstate,path,detail=download_item(session,item)
+    if dstate=="rate" then
+      progress_screen("Rate limited",item.name,i,#items,detail or "Try again later.","warn")
+      sleep_s(0.35)
+      results[#results+1]={name=item.name,status="Rate limited",detail=detail or "Rate limited."}
+    elseif dstate~="ok" then
+      progress_screen("Failed",item.name,i,#items,detail or "Download failed.","err")
+      sleep_s(0.35)
+      results[#results+1]={name=item.name,status="Failed",detail=detail or "Download failed."}
+    else
+      progress_screen("Downloaded",item.name,i,#items,"Clone package downloaded.",nil)
+      sleep_s(0.2)
+      if selected[i] then
+        progress_screen("Installing/Updating",item.name,i,#items,"Applying install/update with root...",nil)
+        local ok,out=install_apk(path)
+        os.remove(path)
+        if ok then
+          progress_screen("Installed/Updated",item.name,i,#items,"Install/update completed.","ok")
+          sleep_s(0.25)
+          results[#results+1]={name=item.name,status="Installed/Updated",detail=out}
         else
-            show_status_screen("Authentication", "Verifying license key…", nil)
-            local lstatus = check_license(lk)
-
-            if lstatus == "server" then
-                show_status_screen("Unavailable", "Cannot reach the server. Try again later.", "err"); return
-            end
-
-            if lstatus ~= "valid" then
-                lic_notice = "That license key was not accepted."
-            else
-                -- Code verification loop
-                local code_notice = "Waiting for Termux code."
-                while true do
-                    show_code_screen(device_label, code_notice)
-                    local code = prompt("Termux code"):upper()
-
-                    if code == "" then
-                        code_notice = "No code entered. Please try again."
-                    else
-                        show_status_screen("Verification", "Checking Termux code…", nil)
-                        local vstatus = validate_code(lk, code, hwid, device_label)
-
-                        if vstatus == "server" then
-                            show_status_screen("Unavailable", "Cannot reach the server. Try again later, or contact me!", "err"); return
-                        end
-                        if vstatus == "valid" then
-                            save_license(lk, hwid, device_label)
-                            print_success(); return
-                        end
-                        if vstatus == "invalid_license" then
-                            os.remove(LICENSE_PATH)
-                            lic_notice = "License is no longer valid."
-                            break
-                        end
-                        if vstatus == "expired" then
-                            code_notice = "Code expired — run /get-termux-code again."
-                        elseif vstatus == "hwid_limit_reached" then
-                            code_notice = "HWID limit reached for this license."
-                        else
-                            code_notice = "That Termux code was not accepted."
-                        end
-                    end
-                end
-            end
+          progress_screen("Failed",item.name,i,#items,out or "Install/update failed.","err")
+          sleep_s(0.35)
+          results[#results+1]={name=item.name,status="Failed",detail=out or "Install/update failed."}
         end
+      else
+        os.remove(path)
+        results[#results+1]={name=item.name,status="Downloaded",detail="Downloaded and cleaned."}
+      end
     end
+  end
+  summary_screen(results)
 end
 
-local ok, err = pcall(main)
+local function catalog_menu()
+  status("CLONES CATALOG","Fetching Lunex Lite Clones",{"Please wait while the catalog is refreshed."},nil)
+  local session,problem=fetch_catalog()
+  if not session then
+    status("CLONES CATALOG",problem=="rate" and "Rate limited while fetching clones." or "Failed to fetch Lunex Lite Clones.",{"Press Enter to go back."},problem=="rate" and "warn" or "err")
+    io.read("*l")
+    return
+  end
+  if #session.items==0 then
+    status("CLONES CATALOG","No clones were found.",{"Press Enter to go back."},"warn")
+    io.read("*l")
+    return
+  end
+  local selected,cursor,scroll,notice={},1,1,""
+  local base=#session.items
+  while true do
+    if cursor<1 then cursor=1 end
+    if cursor>base+2 then cursor=base+2 end
+    if cursor<=base then
+      if cursor<scroll then scroll=cursor end
+      if cursor>scroll+7 then scroll=cursor-7 end
+    end
+    catalog_screen(session.items,selected,cursor,scroll,notice)
+    notice=""
+    local k=read_key()
+    if k=="Q" then return
+    elseif k=="UP" then cursor=cursor-1
+    elseif k=="DOWN" then cursor=cursor+1
+    elseif k=="A" then
+      local all=true for i=1,base do if not selected[i] then all=false break end end
+      for i=1,base do selected[i]=not all end
+    elseif k=="SPACE" or k=="ENTER" then
+      if cursor<=base then
+        selected[cursor]=not selected[cursor]
+      elseif cursor==base+1 then
+        local count=0 for i=1,base do if selected[i] then count=count+1 end end
+        if count==0 then notice="Choose at least one clone first." else process_items(session,session.items,selected) return end
+      else
+        return
+      end
+    end
+  end
+end
+
+local function main_menu()
+  local cursor,notice=1,""
+  while true do
+    menu_screen(cursor,notice)
+    notice=""
+    local k=read_key()
+    if k=="Q" then clear() os.exit(0)
+    elseif k=="UP" then cursor=cursor<=1 and 2 or cursor-1
+    elseif k=="DOWN" then cursor=cursor>=2 and 1 or cursor+1
+    elseif k=="ONE" then cursor=1 catalog_menu()
+    elseif k=="TWO" then cursor=2 notice="This option is marked as SOON."
+    elseif k=="ENTER" then
+      if cursor==1 then catalog_menu() else notice="This option is marked as SOON." end
+    end
+  end
+end
+
+local function verified()
+  status("VERIFICATION COMPLETE","Verification complete.",{"Loading Lunex menu..."}, "ok")
+  sleep_s(0.8)
+  main_menu()
+end
+
+local function main()
+  mkdir(ROOT_DIR) mkdir(TEMP_ROOT) mkdir(DOWNLOAD_DIR)
+  local hwid,label=device_identity()
+  local saved=load_license()
+  local lic_notice="Waiting for license key."
+  if saved then
+    status("AUTHENTICATION","Verifying saved session...",{"Please wait."},nil)
+    local st=auto_login(saved,hwid,label)
+    if st=="valid" then verified() return end
+    if st=="server" then status("UNAVAILABLE","Cannot reach the server.",{"Try again later."},"err") return end
+    os.remove(LICENSE_PATH)
+    lic_notice="Saved session expired - please enter your license key again."
+  end
+  while true do
+    screen_license(lic_notice)
+    local lk=ask("License key"):upper()
+    if lk=="" then
+      lic_notice="No license key entered. Please try again."
+    else
+      status("AUTHENTICATION","Verifying license key...",{"Please wait."},nil)
+      local lst=check_license(lk)
+      if lst=="server" then status("UNAVAILABLE","Cannot reach the server.",{"Try again later."},"err") return end
+      if lst~="valid" then
+        lic_notice="That license key was not accepted."
+      else
+        local code_notice="Waiting for Termux code."
+        while true do
+          screen_code(label,code_notice)
+          local code=ask("Termux code"):upper()
+          if code=="" then
+            code_notice="No code entered. Please try again."
+          else
+            status("GET TERMUX CODE","Checking Termux code...",{"Please wait."},nil)
+            local vst=validate_code(lk,code,hwid,label)
+            if vst=="server" then status("UNAVAILABLE","Cannot reach the server.",{"Try again later."},"err") return end
+            if vst=="valid" then save_license(lk,hwid,label) verified() return end
+            if vst=="invalid_license" then os.remove(LICENSE_PATH) lic_notice="License is no longer valid." break
+            elseif vst=="expired" then code_notice="Code expired - run /get-termux-code again."
+            elseif vst=="hwid_limit_reached" then code_notice="HWID limit reached for this license."
+            else code_notice="That Termux code was not accepted." end
+          end
+        end
+      end
+    end
+  end
+end
+
+local ok,err=pcall(main)
 if not ok then
-    show_status_screen("Error", trim(err), "err")
-    print(trim(err))
-    os.exit(1)
+  status("ERROR","An unexpected error occurred.",{trim(err)},"err")
+  print(trim(err))
+  os.exit(1)
 end
