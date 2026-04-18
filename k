@@ -497,15 +497,19 @@ local function result_list_lines(entry, idx, inner, show_detail)
   local sym    = ({ ok=SYM.ok, dl=SYM.dl, warn=SYM.warn, err=SYM.err })[kind] or SYM.info
   local rows   = {}
   rows[#rows + 1] = row(sym,{
-    paint("Clone "..tostring(idx)..": ", C.ash),
-    paint(trunc(entry.status or "", 24), BL, scol),
+    paint("Clone "..tostring(idx)..":", C.ash),
   })
+  rows[#rows + 1] = "  " .. paint(trunc(entry.status or "", inner - 4), BL, scol)
   rows[#rows + 1] = "  " .. paint(trunc(entry.name or "", inner - 4), C.white)
   if show_detail and entry.detail and entry.detail ~= "" and entry.status ~= "Downloaded" then
     rows[#rows + 1] = "  " .. paint(trunc(entry.detail, inner - 4), C.slate)
   end
   rows[#rows + 1] = ""
   return rows
+end
+
+local function catalog_visible_rows()
+  return math.max(2, math.min(CFG.cat_visible, math.max(2, math.floor((term_rows() - 31) / 3))))
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -652,9 +656,9 @@ local function screen_summary(results)
   mouse_disable()
   local n_ok,n_dl,n_fail=0,0,0
   for _,r in ipairs(results) do
-    if r.status=="Installed" then n_ok=n_ok+1
-    elseif r.status=="Downloaded"    then n_dl=n_dl+1
-    else                                  n_fail=n_fail+1 end
+    if r.kind=="ok" then n_ok=n_ok+1
+    elseif r.kind=="dl" then n_dl=n_dl+1
+    else n_fail=n_fail+1 end
   end
 
   local scroll=1
@@ -691,7 +695,7 @@ local function screen_summary(results)
         name = r.name,
         status = r.status,
         detail = r.detail,
-        kind = r.kind or (r.status=="Installed" and "ok" or r.status=="Downloaded" and "dl" or r.status=="Rate limited" and "warn" or "err"),
+        kind = r.kind or (r.status=="Downloaded" and "dl" or r.status=="Rate limited" and "warn" or "err"),
       }, i, inner, true)
       for _, ln in ipairs(block) do rows[#rows+1]=ln end
     end
@@ -771,7 +775,7 @@ local function screen_catalog(items,selected,cursor,scroll,notice)
   }
   if notice and notice~="" then rows[#rows+1]=row(SYM.warn,{paint(notice,C.warn)}); rows[#rows+1]="" end
 
-  local vis = math.max(2, math.min(CFG.cat_visible, math.max(2, math.floor((term_rows() - 31) / 3))))
+  local vis = catalog_visible_rows()
   local last=math.min(#items,scroll+vis-1)
 
   if scroll>1 then rows[#rows+1]=paint("  ↑  "..tostring(scroll-1).." items above",C.slate) end
@@ -786,7 +790,7 @@ local function screen_catalog(items,selected,cursor,scroll,notice)
     register_click_hit(HEADER_LINES + 1 + row_start, HEADER_LINES + 1 + row_start + 2, "ITEM:"..i)
   end
 
-  if last<#items then rows[#rows+1]=paint("  ↓  "..(#items-last).." more below",C.slate) end
+  if last<#items then rows[#rows+1]=paint("  ↓  "..(#items-last).."+ more below",C.slate) end
 
   local base=#items
   rows[#rows+1]=""
@@ -1060,10 +1064,10 @@ local function process_clones(session,items,selected)
         screen_progress(i,total,{name=item.name,phase="Installing / Updating",pct=75},logs)
         local ok,out=install_apk(path); os.remove(path)
         if ok then
-          results[#results+1]={name=item.name,status="Installed",detail=out,kind="ok"}
-          append_log(logs,"ok","Clone "..i..": Installed")
+          results[#results+1]={name=item.name,status="Successfully Installed/Updated",detail=out,kind="ok"}
+          append_log(logs,"ok","Clone "..i..": Successfully Installed/Updated")
           append_log(logs,"info","Clone "..i..": Deleted APK")
-          screen_progress(i,total,{name=item.name,phase="Installed",pct=100},logs)
+          screen_progress(i,total,{name=item.name,phase="Successfully Installed/Updated",pct=100},logs)
         else
           results[#results+1]={name=item.name,status="Failed",detail=out,kind="err"}
           append_log(logs,"err","Clone "..i..": Install failed")
@@ -1104,10 +1108,11 @@ local function catalog_menu()
   local selected={}; local cursor=1; local scroll=1; local notice=""; local base=#session.items
 
   while true do
+    local vis=catalog_visible_rows()
     cursor=math.max(1,math.min(cursor,base+2))
     if cursor<=base then
       if cursor<scroll                      then scroll=cursor end
-      if cursor>scroll+CFG.cat_visible-1   then scroll=cursor-CFG.cat_visible+1 end
+      if cursor>scroll+vis-1               then scroll=cursor-vis+1 end
       scroll=math.max(1,scroll)
     end
 
