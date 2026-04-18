@@ -592,8 +592,9 @@ local function screen_progress(idx, total, current, logs)
   local phase  = current and current.phase or "Working…"
   local pct    = current and current.pct   or 0
   local curname= current and trunc(current.name, inner-8) or ""
+  local phase_txt = trunc(phase, math.max(12, inner - 18))
   local phase_line = row(SYM.inst,{
-    paint(phase,BL,C.white),
+    paint(phase_txt,BL,C.white),
     paint("  "..idx.."/"..total,C.slate),
   })
 
@@ -636,6 +637,7 @@ local function screen_summary(results)
   end
 
   local scroll=1
+  local inner = box_inner()
   local vis   = math.max(1, math.min(4, math.max(1, math.floor((term_rows() - 28) / 4))))
 
   while true do
