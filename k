@@ -111,90 +111,211 @@ local function cmd_exists(c) return run1("command -v "..c)~="" end
 local function sleep_s(sec) if IS_WIN then os.execute('powershell -NoProfile -Command "Start-Sleep -Milliseconds '..math.max(1,math.floor(sec*1000))..'" >'..DEVNULL..' 2>&1') else os.execute("sleep "..sec) end end
 local function clear() if IS_WIN then os.execute("cls >"..DEVNULL.." 2>&1") end io.write("\27[3J\27[2J\27[H") io.flush() end
 
-local function strip_ansi(s) return tostring(s or ""):gsub("\27%[[%d;:]*[A-Za-z]","") end
-local function width(s) return #strip_ansi(s) end
-local function pad(s,w) s=tostring(s or "") local n=width(s) return n>=w and s or s..string.rep(" ",w-n) end
-local function center(s,w) local n=width(s) local p=math.max(0,w-n) local l=math.floor(p/2) return string.rep(" ",l)..s..string.rep(" ",p-l) end
-local function trunc(s,w) s=strip_ansi(s) if #s<=w then return s end return s:sub(1,math.max(1,w-3)).."..." end
-local function cols() return math.max(72,tonumber(run1("tput cols")) or 90) end
+local function strip_ansi(s)
+  return tostring(s or ""):gsub("\27%[[%d;:]*[A-Za-z]", "")
+end
 
-local E="\27[" local R=E.."0m" local B=E.."1m"
+local function width(s)
+  local clean = strip_ansi(tostring(s or ""))
+  local w, i = 0, 1
+  while i <= #clean do
+    local b = clean:byte(i)
+    w = w + 1
+    if b >= 0xF0 then i = i + 4
+    elseif b >= 0xE0 then i = i + 3
+    elseif b >= 0xC0 then i = i + 2
+    else i = i + 1 end
+  end
+  return w
+end
+
+local function pad(s, w)
+  s = tostring(s or "")
+  local n = width(s)
+  return n >= w and s or s .. string.rep(" ", w - n)
+end
+
+local function center(s, w)
+  local n = width(s)
+  local p = math.max(0, w - n)
+  local l = math.floor(p / 2)
+  return string.rep(" ", l) .. s .. string.rep(" ", p - l)
+end
+
+local function trunc(s, w)
+  s = strip_ansi(tostring(s or ""))
+  if width(s) <= w then return s end
+  local out, cw, i = {}, 0, 1
+  while i <= #s and cw < w - 1 do
+    local b = s:byte(i)
+    local bytes = b >= 0xF0 and 4 or b >= 0xE0 and 3 or b >= 0xC0 and 2 or 1
+    out[#out + 1] = s:sub(i, i + bytes - 1)
+    cw = cw + 1
+    i = i + bytes
+  end
+  return table.concat(out) .. "…"
+end
+
+local function cols()
+  return math.max(60, tonumber(run1("tput cols")) or 80)
+end
+
+local E = "\27[" local R = E .. "0m"
 local function tc(r,g,b) return E.."38;2;"..r..";"..g..";"..b.."m" end
-local C={blue1=tc(121,190,255),blue2=tc(82,154,245),blue3=tc(53,122,225),cyan=tc(0,217,255),white=tc(236,242,255),silver=tc(194,208,228),muted=tc(126,142,168),ok=tc(83,222,125),warn=tc(255,190,70),err=tc(255,92,92),border=tc(48,77,146),soft=tc(34,55,106)}
+local B = E .. "1m"
 local function paint(s,...) local codes=table.concat({...}) if codes=="" then return tostring(s or "") end return codes..tostring(s or "")..R end
 
-local BANNER={
-" _      _   _ _   _ ________   __",
-"| |    | | | | \\ | |  ____\\ \\ / /",
-"| |    | | | |  \\| | |__   \\ V / ",
-"| |    | | | | . ` |  __|   > <  ",
-"| |____| |_| | |\\  | |____ / . \\ ",
-"|______|\\___/|_| \\_|______/_/ \\_\\",
+local C = {
+  b1 = tc(110, 185, 255),
+  b2 = tc(75, 150, 245),
+  b3 = tc(50, 120, 225),
+  b4 = tc(35, 95, 200),
+  b5 = tc(22, 68, 168),
+  b6 = tc(14, 47, 130),
+  cyan = tc(0, 218, 255),
+  teal = tc(0, 200, 178),
+  white = tc(238, 244, 255),
+  silver = tc(195, 208, 228),
+  ash = tc(148, 162, 182),
+  slate = tc(96, 112, 136),
+  coal = tc(54, 64, 82),
+  muted = tc(148, 162, 182),
+  ok = tc(66, 220, 118),
+  warn = tc(255, 188, 48),
+  err = tc(255, 70, 70),
+  border = tc(52, 82, 148),
+  soft = tc(36, 56, 106),
+  bdr_lo = tc(36, 56, 106),
+  bdr_mid = tc(52, 82, 148),
+  bdr_hi = tc(78, 118, 200),
+  bdr_ok = tc(28, 138, 66),
+  bdr_err = tc(136, 28, 28),
+  bdr_wrn = tc(138, 100, 18),
+}
+
+local BANNER = {
+  { C.b1, "  ██╗     ██╗   ██╗███╗  ██╗███████╗██╗  ██╗" },
+  { C.b2, "  ██║     ██║   ██║████╗ ██║██╔════╝╚██╗██╔╝" },
+  { C.b3, "  ██║     ██║   ██║██╔██╗██║█████╗   ╚███╔╝ " },
+  { C.b4, "  ██║     ██║   ██║██║╚████║██╔══╝   ██╔██╗ " },
+  { C.b5, "  ███████╗╚██████╔╝██║ ╚███║███████╗██╔╝╚██╗" },
+  { C.b6, "  ╚══════╝ ╚═════╝ ╚═╝  ╚══╝╚══════╝╚═╝  ╚═╝" },
+}
+
+local BOX = {
+  D = { tl="╔", tr="╗", bl="╚", br="╝", h="═", v="║" },
+  R = { tl="╭", tr="╮", bl="╰", br="╯", h="─", v="│" },
 }
 
 local function header(step)
-  local w=cols()
+  local w = cols()
   clear()
   io.write("\n")
-  local cc={C.blue1,C.blue2,C.blue3,C.blue2,C.blue1,C.blue2}
-  for i,line in ipairs(BANNER) do io.write(center(paint(line,B,cc[i] or C.blue1),w).."\n") end
-  io.write("\n"..center(paint("L U N E X   L I T E   C L O N E S",B,C.cyan),w).."\n")
-  if step and step~="" then io.write("\n"..center(paint("["..step.."]",B,C.silver),w).."\n") end
+  for _, row in ipairs(BANNER) do
+    io.write(center(paint(row[2], B, row[1]), w) .. "\n")
+  end
+  io.write("\n")
+  local tag = paint("▸ ", C.bdr_mid)
+    .. paint("S E C U R E   ·   V E R I F I E D   ·   A U T H E N T I C A T E D", C.coal)
+    .. paint(" ◂", C.bdr_mid)
+  io.write(center(tag, w) .. "\n\n")
+  io.write(center(paint(string.rep("─", math.min(w - 8, 66)), C.bdr_lo), w) .. "\n")
+  if step and step ~= "" then
+    io.write("\n")
+    io.write(center(paint("  " .. step .. "  ", B, C.cyan), w) .. "\n")
+  end
   io.write("\n")
 end
 
-local function box(title,rows,color)
-  local w=math.max(40,math.min(cols()-6,84))
-  local t=title and (" "..title.." ") or ""
-  io.write("  "..paint("+"..t..string.rep("-",math.max(0,w-#t)).."+",color or C.border).."\n")
-  for _,row in ipairs(rows) do io.write("  "..paint("|",color or C.border)..pad(row,w)..paint("|",color or C.border).."\n") end
-  io.write("  "..paint("+"..string.rep("-",w).."+",color or C.border).."\n")
+local function box(title, rows, color, style)
+  local b = BOX[style or "D"] or BOX.D
+  local w = math.max(34, math.min(cols() - 6, 78))
+  local t = title and (" " .. title .. " ") or ""
+  local fill = math.max(0, w - width(t))
+  io.write("  " .. paint(b.tl .. t .. string.rep(b.h, fill) .. b.tr, color or C.bdr_mid) .. "\n")
+  for _, row in ipairs(rows) do
+    io.write("  " .. paint(b.v, color or C.bdr_mid) .. pad(row, w) .. paint(b.v, color or C.bdr_mid) .. "\n")
+  end
+  io.write("  " .. paint(b.bl .. string.rep(b.h, w) .. b.br, color or C.bdr_mid) .. "\n")
 end
 
-local function status(step,title,lines,kind)
-  local color=kind=="ok" and C.ok or kind=="warn" and C.warn or kind=="err" and C.err or C.border
-  header(step)
-  local rows={"",paint(title,B,C.white),""}
-  for _,line in ipairs(lines or {}) do rows[#rows+1]=paint(line,C.silver) end
-  rows[#rows+1]=""
-  box(nil,rows,color)
+local SYM = {
+  ok = paint(" ✔ ", B, C.ok),
+  err = paint(" ✘ ", B, C.err),
+  warn = paint(" ⚠ ", B, C.warn),
+  wait = paint(" ◌ ", C.cyan),
+  info = paint(" ◈ ", C.cyan),
+  bullet = paint(" • ", C.slate),
+  key = paint(" ⬡ ", C.teal),
+  arrow = paint(" › ", B, C.b2),
+}
+
+local function S(sym, parts)
+  return sym .. table.concat(parts)
+end
+
+local function status(step, title, lines, kind)
+  local icon = ({ ok = SYM.ok, err = SYM.err, warn = SYM.warn })[kind] or SYM.info
+  local border = ({ ok = C.bdr_ok, err = C.bdr_err, warn = C.bdr_wrn })[kind] or C.bdr_hi
+  header((step or ""):upper())
+  local rows = { "", S(icon, { paint(title or "", B, C.white) }), "" }
+  for _, line in ipairs(lines or {}) do
+    rows[#rows + 1] = paint(line, C.silver)
+  end
+  rows[#rows + 1] = ""
+  box(" " .. (step or "") .. " ", rows, border, "D")
   io.write("\n")
 end
 
 local function screen_license(msg)
-  header("LICENSE")
-  box(" License Key ",{
+  local problem = msg and msg ~= "Waiting for license key."
+  header("LICENSE AUTHENTICATION")
+  box(" License Key ", {
     "",
-    paint("Enter your license key to continue.",B,C.white),
+    S(SYM.key, { paint("Enter your license key to continue.", B, C.white) }),
     "",
-    paint("Use /key_information in the Discord bot if you need your key.",C.silver),
-    paint("Type q to exit.",C.muted),
+    S(SYM.bullet, { paint("Use ", C.ash), paint("/key_information", B, C.cyan), paint(" in the Discord bot.", C.ash) }),
+    S(SYM.bullet, { paint("Paste the key at the prompt below.", C.ash) }),
+    S(SYM.bullet, { paint("Type q to exit.", C.ash) }),
     "",
-    paint(msg or "Waiting for license key.",C.warn),
+    S(problem and SYM.warn or SYM.wait, { paint(msg or "Waiting for license key.", problem and C.warn or C.silver) }),
     "",
-  },C.border)
+  }, C.bdr_mid, "D")
+  io.write("\n")
+  box(nil, {
+    S(SYM.bullet, { paint("Saved sessions are checked automatically on startup.", C.slate) }),
+    S(SYM.bullet, { paint("If auto-login fails, re-enter your license key.", C.slate) }),
+  }, C.bdr_lo, "R")
   io.write("\n")
 end
 
-local function screen_code(device,msg)
-  header("GET TERMUX CODE")
-  box(" Device Verification ",{
+local function screen_code(device, msg)
+  local problem = msg and msg ~= "Waiting for Termux code."
+  header("DEVICE VERIFICATION")
+  box(" Termux Code ", {
     "",
-    paint("Device: "..trunc(device or "Unknown Device",62),B,C.white),
+    S(SYM.key, { paint("Device  ", C.ash), paint(trunc(device or "Unknown Device", 54), B, C.white) }),
     "",
-    paint("Run /get-termux-code in the Discord bot and paste the code here.",C.silver),
-    paint("Type q to exit.",C.muted),
+    S(SYM.bullet, { paint("Run ", C.ash), paint("/get-termux-code", B, C.cyan), paint(" in the Discord bot.", C.ash) }),
+    S(SYM.bullet, { paint("Paste the code sent to your DMs.", C.ash) }),
+    S(SYM.bullet, { paint("Type q to exit.", C.ash) }),
     "",
-    paint(msg or "Waiting for Termux code.",C.warn),
+    S(problem and SYM.warn or SYM.wait, { paint(msg or "Waiting for Termux code.", problem and C.warn or C.silver) }),
     "",
-  },C.border)
+  }, C.bdr_mid, "D")
+  io.write("\n")
+  box(nil, {
+    S(SYM.bullet, { paint("This code is tied to your device HWID.", C.slate) }),
+    S(SYM.bullet, { paint("If the code expires, run /get-termux-code again.", C.slate) }),
+  }, C.bdr_lo, "R")
   io.write("\n")
 end
 
 local function ask(label)
-  io.write(paint("  > "..label..": ",B,C.cyan)) io.flush()
-  local v=trim(io.read("*l") or "")
-  if v:lower()=="q" then clear() os.exit(0) end
+  io.write("\n" .. SYM.arrow .. paint(label, B, C.white) .. "  " .. paint("▶  ", C.bdr_mid))
+  io.flush()
+  local v = trim(io.read("*l") or "")
+  if v:lower() == "q" then clear() os.exit(0) end
   return v
 end
 
@@ -454,22 +575,29 @@ local function catalog_screen(items,selected,cursor,scroll,notice)
 end
 
 local function progress_screen(stage,name,idx,total,detail,kind)
-  status("CLONE TASK",stage,{
-    "Clone "..idx.." / "..total,
-    trunc(name,70),
-    detail or "",
+  status("CLONE TASK",stage.." "..idx.."/"..total,{
+    trunc(name,66),
+    trunc(detail or "",66),
   },kind)
 end
 
 local function summary_screen(results)
+  clear()
   header("SUMMARY")
-  local rows={"",paint("All processed files were cleaned after each task.",C.silver),paint("Folder used: "..DOWNLOAD_DIR,C.silver),""}
+  local rows={
+    "",
+    paint("Processed files are cleaned after each task.",C.silver),
+    paint("Folder used: "..DOWNLOAD_DIR,C.silver),
+    "",
+  }
   for _,r in ipairs(results) do
     local color=r.status=="Installed/Updated" and C.ok or r.status=="Downloaded" and C.cyan or r.status=="Rate limited" and C.warn or C.err
-    rows[#rows+1]=paint(r.status.."  "..trunc(r.name,62),B,color)
-    if r.detail and r.detail~="" then rows[#rows+1]=paint("   "..trunc(r.detail,70),C.muted) end
+    rows[#rows+1]=paint(r.status,B,color)
+    rows[#rows+1]=paint("  "..trunc(r.name,64),C.white)
+    if r.detail and r.detail~="" then rows[#rows+1]=paint("  "..trunc(r.detail,64),C.muted) end
+    rows[#rows+1]=""
   end
-  rows[#rows+1]="" rows[#rows+1]=paint("Press Enter to return to the menu.",C.muted)
+  rows[#rows+1]=paint("Press Enter to return to the menu.",C.muted)
   box(" Task Results ",rows,C.border) io.write("\n") io.read("*l")
 end
 
