@@ -933,12 +933,27 @@ local function load_license()
   local raw=h:read("*a"); h:close()
   local d=json.decode(raw); if type(d)~="table" then os.remove(CFG.lic_path); return nil end
   local k=trim(d.license_key or ""):gsub("%s",""):upper()
-  if k=="" then os.remove(CFG.lic_path); return nil end; return k
+  local hwid=trim(d.hwid or ""):gsub("%s",""):upper()
+  local sig=trim(d.session_hash or "")
+  if k=="" or hwid=="" or sig=="" then os.remove(CFG.lic_path); return nil end
+  return {key=k,hwid=hwid,session_hash=sig}
+end
+
+local function session_hash(key,hwid)
+  return sha256(trim(key or ""):gsub("%s",""):upper().."::"..trim(hwid or ""):gsub("%s",""):upper().."::LUNEX_SESSION_V1")
 end
 
 local function save_license(key,hwid,label)
   mkdir(CFG.root); local h=io.open(CFG.lic_path,"w"); if not h then return end
-  h:write(jenc({license_key=trim(key):gsub("%s",""):upper(),hwid=hwid,device_label=label,saved_at=os.time()})); h:close()
+  local clean_key=trim(key):gsub("%s",""):upper()
+  local clean_hwid=trim(hwid):gsub("%s",""):upper()
+  h:write(jenc({
+    license_key=clean_key,
+    hwid=clean_hwid,
+    session_hash=session_hash(clean_key,clean_hwid),
+    device_label=label,
+    saved_at=os.time()
+  })); h:close()
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -1194,12 +1209,18 @@ local function main()
   local lic_notice="Waiting for license key."
 
   if saved then
-    screen_status("AUTHENTICATION","Verifying saved session…",{"Please wait."},nil)
-    local st=auto_login(saved,hwid,label)
-    if st=="valid"  then verified(); return end
-    if st=="server" then screen_status("UNAVAILABLE","Cannot reach the server.",{"Try again later."},"err"); return end
-    os.remove(CFG.lic_path)
-    lic_notice="Saved session expired — please enter your license key again."
+    local expected=session_hash(saved.key,saved.hwid)
+    if saved.hwid~=hwid or saved.session_hash~=expected then
+      os.remove(CFG.lic_path)
+      lic_notice="Saved session changed — please enter your license key again."
+    else
+      screen_status("AUTHENTICATION","Verifying saved session…",{"Please wait."},nil)
+      local st=auto_login(saved.key,hwid,label)
+      if st=="valid"  then verified(); return end
+      if st=="server" then screen_status("UNAVAILABLE","Cannot reach the server.",{"Try again later."},"err"); return end
+      os.remove(CFG.lic_path)
+      lic_notice="Saved session expired — please enter your license key again."
+    end
   end
 
   while true do
