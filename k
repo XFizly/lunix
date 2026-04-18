@@ -167,6 +167,9 @@ end
 --  then term_cooked() within the same logical transaction.
 -- ══════════════════════════════════════════════════════════════════════════════
 local _STTY = ""
+local HEADER_LINES = 14
+local CLICK_HITS = {}
+local CLICK_TOKEN = nil
 
 local function term_raw()
   if IS_WIN then return end
@@ -190,6 +193,36 @@ end
 local _orig_exit = os.exit
 os.exit = function(code) term_cooked(); _orig_exit(code) end
 
+local function mouse_enable()
+  if IS_WIN then return end
+  io.write("\27[?1000h\27[?1006h")
+  io.flush()
+end
+
+local function mouse_disable()
+  if IS_WIN then return end
+  io.write("\27[?1000l\27[?1006l")
+  io.flush()
+end
+
+local function reset_click_hits()
+  CLICK_HITS = {}
+  CLICK_TOKEN = nil
+end
+
+local function register_click_hit(y1, y2, token)
+  CLICK_HITS[#CLICK_HITS + 1] = { y1 = y1, y2 = y2, token = token }
+end
+
+local function resolve_click(y)
+  for _, hit in ipairs(CLICK_HITS) do
+    if y >= hit.y1 and y <= hit.y2 then
+      return hit.token
+    end
+  end
+  return nil
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 --  Key reader  (raw single-char read, always restores cooked mode after)
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -205,21 +238,28 @@ local function read_key()
   end
 
   term_raw()
-  local h   = io.popen("dd bs=6 count=1 </dev/tty 2>/dev/null | od -An -tx1 | tr -d ' \\n\\r'")
-  local hex = ""
-  if h then hex=trim(h:read("*a") or ""); h:close() end
+  local h   = io.popen([[bash -lc 'IFS= read -r -s -n1 a </dev/tty 2>/dev/null; IFS= read -r -s -n31 -t 0.02 b </dev/tty 2>/dev/null; printf "%s" "$a$b"' ]])
+  local raw = ""
+  if h then raw = h:read("*a") or ""; h:close() end
   term_cooked()  -- ← always restore, even on error
 
-  if hex=="1b5b41" then return "UP"
-  elseif hex=="1b5b42" then return "DOWN"
-  elseif hex=="1b5b43" then return "RIGHT"
-  elseif hex=="1b5b44" then return "LEFT"
-  elseif hex=="20"     then return "SPACE"
-  elseif hex=="61" or hex=="41" then return "A"
-  elseif hex=="71" or hex=="51" then return "Q"
-  elseif hex=="31"     then return "ONE"
-  elseif hex=="32"     then return "TWO"
-  elseif hex=="0d" or hex=="0a" or hex=="" then return "ENTER"
+  local btn, mx, my, state = raw:match("^\27%[<(%d+);(%d+);(%d+)([mM])")
+  if btn and my then
+    CLICK_TOKEN = resolve_click(tonumber(my) or 0)
+    if CLICK_TOKEN then return "CLICK" end
+    return ""
+  end
+
+  if raw=="\27[A" then return "UP"
+  elseif raw=="\27[B" then return "DOWN"
+  elseif raw=="\27[C" then return "RIGHT"
+  elseif raw=="\27[D" then return "LEFT"
+  elseif raw==" " then return "SPACE"
+  elseif raw=="a" or raw=="A" then return "A"
+  elseif raw=="q" or raw=="Q" then return "Q"
+  elseif raw=="1" then return "ONE"
+  elseif raw=="2" then return "TWO"
+  elseif raw=="\r" or raw=="\n" or raw=="" then return "ENTER"
   end
   return ""
 end
@@ -272,6 +312,7 @@ local function trunc(s,w)     -- truncate to w columns, append "…"
 end
 
 local function term_cols() return math.max(60,tonumber(run1("tput cols")) or 80) end
+local function term_rows() return math.max(24,tonumber(run1("tput lines")) or 36) end
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  Colors  (built from CFG.pal)
@@ -410,10 +451,30 @@ local function button_lines(label, active, muted, icon)
   }
 end
 
+local function item_button_lines(label, meta, active, selected)
+  local inner = box_inner()
+  local btnw  = math.max(20, inner - 2)
+  local bcol  = active and C.bhi or C.bmid
+  local namec = active and C.white or C.silver
+  local metac = active and C.cyan or C.slate
+  local mark  = selected and paint("[x]", BL, C.ok) or paint("[ ]", C.slate)
+  local leftw = math.max(10, btnw - 18)
+  local left  = mark .. " " .. paint(trunc(label or "", leftw), active and BL or "", namec)
+  local right = paint(padcol(meta or "", 8), metac)
+  local spacer = math.max(1, (btnw - 4) - cw(left) - cw(right))
+  local body = left .. string.rep(" ", spacer) .. right
+  return {
+    " " .. paint("┌"..string.rep("─", btnw - 2).."┐", bcol),
+    " " .. paint("│", bcol) .. " " .. padcol(body, btnw - 4) .. " " .. paint("│", bcol),
+    " " .. paint("└"..string.rep("─", btnw - 2).."┘", bcol),
+  }
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 --  Screen helpers
 -- ══════════════════════════════════════════════════════════════════════════════
 local function screen_status(step, title, lines, kind)
+  mouse_disable()
   local icon   = ({ok=SYM.ok, err=SYM.err, warn=SYM.warn})[kind] or SYM.info
   local border = ({ok=C.bok,  err=C.berr,  warn=C.bwrn})[kind]   or C.bhi
   header((step or ""):upper())
@@ -424,6 +485,7 @@ local function screen_status(step, title, lines, kind)
 end
 
 local function screen_license(msg)
+  mouse_disable()
   local problem=msg and msg~="Waiting for license key."
   header("LICENSE AUTHENTICATION")
   draw_box(" License Key ",{
@@ -446,6 +508,7 @@ local function screen_license(msg)
 end
 
 local function screen_code(device, msg)
+  mouse_disable()
   local problem=msg and msg~="Waiting for Termux code."
   header("DEVICE VERIFICATION")
   draw_box(" Termux Code ",{
@@ -501,6 +564,7 @@ end
 --  Progress / Task screen  (redesigned — no more floating pipe characters)
 -- ══════════════════════════════════════════════════════════════════════════════
 local function screen_progress(idx, total, current, log)
+  mouse_disable()
   local inner  = box_inner()
   header("CLONE TASK")
 
@@ -547,6 +611,7 @@ end
 --  Summary screen  (scrollable TUI — q and Enter both work)
 -- ══════════════════════════════════════════════════════════════════════════════
 local function screen_summary(results)
+  mouse_disable()
   local n_ok,n_dl,n_fail=0,0,0
   for _,r in ipairs(results) do
     if r.status=="Installed/Updated" then n_ok=n_ok+1
@@ -631,6 +696,8 @@ end
 --  Main menu screen
 -- ══════════════════════════════════════════════════════════════════════════════
 local function screen_menu(cursor,notice)
+  mouse_enable()
+  reset_click_hits()
   header("MAIN MENU")
   local opts={
     {"Download & Install / Update Clones","[1]"},
@@ -641,11 +708,13 @@ local function screen_menu(cursor,notice)
     rows[#rows+1]=row(SYM.warn,{paint(notice,C.warn)}); rows[#rows+1]=""
   end
   for i,opt in ipairs(opts) do
+    local row_start = #rows + 1
     local block = button_lines(opt[1], cursor==i, i==2, opt[2])
     rows[#rows+1]=block[1]
     rows[#rows+1]=block[2]
     rows[#rows+1]=block[3]
     rows[#rows+1]=""
+    register_click_hit(HEADER_LINES + 1 + row_start, HEADER_LINES + 1 + row_start + 2, i == 1 and "ONE" or "TWO")
   end
   rows[#rows+1]=paint("  ↑ ↓  Navigate    Enter  Select    q  Exit",C.slate)
   draw_box(" Lunex Menu ",rows,C.bmid,"D")
@@ -662,6 +731,8 @@ local function fmt_size(n)
 end
 
 local function screen_catalog(items,selected,cursor,scroll,notice)
+  mouse_enable()
+  reset_click_hits()
   local inner=box_inner()
   header("CLONES CATALOG")
   local rows={
@@ -672,20 +743,19 @@ local function screen_catalog(items,selected,cursor,scroll,notice)
   }
   if notice and notice~="" then rows[#rows+1]=row(SYM.warn,{paint(notice,C.warn)}); rows[#rows+1]="" end
 
-  local vis =CFG.cat_visible
+  local vis = math.max(2, math.min(CFG.cat_visible, math.max(2, math.floor((term_rows() - 31) / 3))))
   local last=math.min(#items,scroll+vis-1)
-  local name_w = math.max(12, inner - 18)
 
   if scroll>1 then rows[#rows+1]=paint("  ↑  "..tostring(scroll-1).." items above",C.slate) end
 
   for i=scroll,last do
     local item   = items[i]
-    local active = cursor==i
-    local mark   = selected[i] and paint("[x]",BL,C.ok) or paint("[ ]",C.slate)
-    local pfx    = active and paint(" > ",BL,C.cyan) or paint("   ",C.slate)
-    local nm     = paint(padcol(trunc(item.name,name_w),name_w), active and C.white or C.silver)
-    local sz     = paint(padcol(fmt_size(item.size),8), active and C.cyan or C.slate)
-    rows[#rows+1]=pfx..mark.." "..nm.." "..sz
+    local row_start = #rows + 1
+    local block = item_button_lines(item.name, fmt_size(item.size), cursor==i, selected[i])
+    rows[#rows+1]=block[1]
+    rows[#rows+1]=block[2]
+    rows[#rows+1]=block[3]
+    register_click_hit(HEADER_LINES + 1 + row_start, HEADER_LINES + 1 + row_start + 2, "ITEM:"..i)
   end
 
   if last<#items then rows[#rows+1]=paint("  ↓  "..(#items-last).." more below",C.slate) end
@@ -693,17 +763,21 @@ local function screen_catalog(items,selected,cursor,scroll,notice)
   local base=#items
   rows[#rows+1]=""
   do
+    local row_start = #rows + 1
     local block = button_lines("Start Download & Install", cursor==base+1, false, "[>]")
     rows[#rows+1]=block[1]
     rows[#rows+1]=block[2]
     rows[#rows+1]=block[3]
+    register_click_hit(HEADER_LINES + 1 + row_start, HEADER_LINES + 1 + row_start + 2, "START")
   end
   rows[#rows+1]=""
   do
+    local row_start = #rows + 1
     local block = button_lines("Go Back", cursor==base+2, false, "[<]")
     rows[#rows+1]=block[1]
     rows[#rows+1]=block[2]
     rows[#rows+1]=block[3]
+    register_click_hit(HEADER_LINES + 1 + row_start, HEADER_LINES + 1 + row_start + 2, "BACK")
   end
   rows[#rows+1]=""
   rows[#rows+1]=paint("  Enter/Space  toggle    A  all    q  back",C.slate)
@@ -987,8 +1061,26 @@ local function catalog_menu()
 
     screen_catalog(session.items,selected,cursor,scroll,notice); notice=""
     local k=read_key()
+    if k=="CLICK" then
+      k=CLICK_TOKEN or ""
+      CLICK_TOKEN=nil
+    end
 
     if     k=="Q"    then return
+    elseif type(k)=="string" and k:match("^ITEM:%d+$") then
+      local idx=tonumber(k:match(":(%d+)$"))
+      if idx then
+        cursor=idx
+        selected[idx]=not selected[idx]
+      end
+    elseif k=="START" then
+      cursor=base+1
+      local count=0; for i=1,base do if selected[i] then count=count+1 end end
+      if count==0 then notice="Select at least one clone first."
+      else process_clones(session,session.items,selected); return end
+    elseif k=="BACK" then
+      cursor=base+2
+      return
     elseif k=="UP"   then cursor=cursor-1
     elseif k=="DOWN" then cursor=cursor+1
     elseif k=="A"    then
@@ -1015,6 +1107,10 @@ local function main_menu()
   while true do
     screen_menu(cursor,notice); notice=""
     local k=read_key()
+    if k=="CLICK" then
+      k=CLICK_TOKEN or ""
+      CLICK_TOKEN=nil
+    end
     if     k=="Q"     then clear_screen(); os.exit(0)
     elseif k=="UP"    then cursor=cursor<=1 and 2 or cursor-1
     elseif k=="DOWN"  then cursor=cursor>=2 and 1 or cursor+1
