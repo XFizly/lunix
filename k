@@ -1027,7 +1027,7 @@ local function process_clones(session,items,selected)
         local ok,out=install_apk(path); os.remove(path)
         if ok then
           results[#results+1]={name=item.name,status="Installed",detail=out,kind="ok"}
-          append_log(logs,"ok","Clone "..i..": Successfully installed")
+          append_log(logs,"ok","Clone "..i..": Installed")
           append_log(logs,"info","Clone "..i..": Deleted APK")
           screen_progress(i,total,{name=item.name,phase="Installed",pct=100},logs)
         else
