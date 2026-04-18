@@ -568,6 +568,10 @@ local function wait_key(hint)
   return v:lower()=="q" and "Q" or "ENTER"
 end
 
+local function append_log(logs, kind, text)
+  logs[#logs + 1] = { kind = kind or "info", text = tostring(text or "") }
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 --  Progress bar
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -580,7 +584,7 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 --  Progress / Task screen  (redesigned — no more floating pipe characters)
 -- ══════════════════════════════════════════════════════════════════════════════
-local function screen_progress(idx, total, current, log)
+local function screen_progress(idx, total, current, logs)
   mouse_disable()
   local inner  = box_inner()
   header("CLONE TASK")
@@ -603,16 +607,18 @@ local function screen_progress(idx, total, current, log)
 
   io.write("\n")
 
-  if log and #log>0 then
-    local vis  = math.max(2, math.min(4, CFG.sum_visible))
-    local start= math.max(1,#log-vis+1)
+  if logs and #logs>0 then
+    local vis  = math.max(3, math.min(6, CFG.sum_visible + 1))
+    local start= math.max(1,#logs-vis+1)
     local rows = {}
     if start>1 then rows[#rows+1]=paint("  ↑  "..tostring(start-1).." earlier items …",C.slate) end
-    for i=start,#log do
-      local block = result_list_lines(log[i], i, inner, false)
-      for _, ln in ipairs(block) do rows[#rows+1]=ln end
+    for i=start,#logs do
+      local e = logs[i]
+      local sym = ({ ok=SYM.ok, warn=SYM.warn, err=SYM.err, dl=SYM.dl, inst=SYM.inst, info=SYM.info })[e.kind] or SYM.info
+      local col = ({ ok=C.ok, warn=C.warn, err=C.err, dl=C.teal, inst=C.cyan, info=C.silver })[e.kind] or C.silver
+      rows[#rows+1]=row(sym,{ paint(trunc(e.text, inner-6), col) })
     end
-    draw_box(" Recent Results ("..#log.."/"..total..") ", rows, C.blo,"R")
+    draw_box(" Logs ", rows, C.blo,"R")
     io.write("\n")
   end
 end
@@ -995,39 +1001,50 @@ end
 --  Clone task runner
 -- ══════════════════════════════════════════════════════════════════════════════
 local function process_clones(session,items,selected)
-  local log={}; local total=#items
+  local logs={}; local results={}; local total=#items
   for i,item in ipairs(items) do
-    screen_progress(i,total,{name=item.name,phase="Downloading",pct=10},log)
+    append_log(logs,"dl","Clone "..i..": Downloading APK")
+    screen_progress(i,total,{name=item.name,phase="Downloading",pct=10},logs)
     local dstate,path,detail=download_item(session,item)
     sleep(CFG.step_delay)
 
     if dstate=="rate" then
-      log[#log+1]={name=item.name,status="Rate limited",detail=detail,kind="warn"}
-      screen_progress(i,total,{name=item.name,phase="Rate limited — skipped",pct=0},log); sleep(CFG.step_delay)
+      results[#results+1]={name=item.name,status="Rate limited",detail=detail,kind="warn"}
+      append_log(logs,"warn","Clone "..i..": Rate limited while downloading")
+      screen_progress(i,total,{name=item.name,phase="Rate limited — skipped",pct=0},logs); sleep(CFG.step_delay)
     elseif dstate~="ok" then
-      log[#log+1]={name=item.name,status="Failed",detail=detail,kind="err"}
-      screen_progress(i,total,{name=item.name,phase="Download failed",pct=0},log); sleep(CFG.step_delay)
+      results[#results+1]={name=item.name,status="Failed",detail=detail,kind="err"}
+      append_log(logs,"err","Clone "..i..": Download failed")
+      screen_progress(i,total,{name=item.name,phase="Download failed",pct=0},logs); sleep(CFG.step_delay)
     else
-      screen_progress(i,total,{name=item.name,phase="Download complete",pct=50},log)
+      append_log(logs,"dl","Clone "..i..": Download complete")
+      screen_progress(i,total,{name=item.name,phase="Download complete",pct=50},logs)
       if selected[i] then
-        screen_progress(i,total,{name=item.name,phase="Installing / Updating",pct=75},log)
+        append_log(logs,"inst","Clone "..i..": Installing / Updating")
+        screen_progress(i,total,{name=item.name,phase="Installing / Updating",pct=75},logs)
         local ok,out=install_apk(path); os.remove(path)
         if ok then
-          log[#log+1]={name=item.name,status="Installed",detail=out,kind="ok"}
-          screen_progress(i,total,{name=item.name,phase="Installed",pct=100},log)
+          results[#results+1]={name=item.name,status="Installed",detail=out,kind="ok"}
+          append_log(logs,"ok","Clone "..i..": Successfully installed")
+          append_log(logs,"info","Clone "..i..": Deleted APK")
+          screen_progress(i,total,{name=item.name,phase="Installed",pct=100},logs)
         else
-          log[#log+1]={name=item.name,status="Failed",detail=out,kind="err"}
-          screen_progress(i,total,{name=item.name,phase="Install failed",pct=0},log)
+          results[#results+1]={name=item.name,status="Failed",detail=out,kind="err"}
+          append_log(logs,"err","Clone "..i..": Install failed")
+          append_log(logs,"info","Clone "..i..": Deleted APK")
+          screen_progress(i,total,{name=item.name,phase="Install failed",pct=0},logs)
         end
       else
         os.remove(path)
-        log[#log+1]={name=item.name,status="Downloaded",detail="Downloaded and cleaned.",kind="dl"}
-        screen_progress(i,total,{name=item.name,phase="Done (not selected for install)",pct=100},log)
+        results[#results+1]={name=item.name,status="Downloaded",detail="Downloaded and cleaned.",kind="dl"}
+        append_log(logs,"dl","Clone "..i..": Downloaded only")
+        append_log(logs,"info","Clone "..i..": Deleted APK")
+        screen_progress(i,total,{name=item.name,phase="Done (not selected for install)",pct=100},logs)
       end
       sleep(CFG.step_delay)
     end
   end
-  screen_summary(log)  -- q and Enter both work cleanly here
+  screen_summary(results)  -- q and Enter both work cleanly here
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
