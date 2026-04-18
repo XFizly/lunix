@@ -311,6 +311,20 @@ local function trunc(s,w)     -- truncate to w columns, append "…"
   return table.concat(out).."…"
 end
 
+local function clean_proc_text(s)
+  s = strip_ansi(tostring(s or "")):gsub("\r", "\n")
+  s = s:gsub("[%z\1-\8\11\12\14-\31\127]", " ")
+  local lines = {}
+  for line in s:gmatch("[^\n]+") do
+    line = trim((line:gsub("%s+", " ")))
+    if line ~= "" then
+      lines[#lines + 1] = line
+    end
+    if #lines >= 2 then break end
+  end
+  return table.concat(lines, " | ")
+end
+
 local function term_cols() return math.max(60,tonumber(run1("tput cols")) or 80) end
 local function term_rows() return math.max(24,tonumber(run1("tput lines")) or 36) end
 
@@ -397,6 +411,13 @@ end
 local function clear_screen()
   if IS_WIN then os.execute("cls >"..DEVNULL.." 2>&1") end
   io.write("\27[3J\27[2J\27[H"); io.flush()
+end
+
+local function reset_tui_state()
+  term_cooked()
+  mouse_disable()
+  io.write("\27[0m\27[?25h")
+  io.flush()
 end
 
 local function header(step)
@@ -985,10 +1006,23 @@ end
 
 local function root_run(cmd)
   if not cmd_exists("su") then return false,"Root unavailable." end
-  local p=io.popen("su -c "..dq(cmd).." 2>&1")
-  local out=p and (p:read("*a") or "") or ""; if p then p:close() end; out=trim(out)
-  if out:lower():find("success",1,true) then return true,out end
-  return false,(out~="" and out or "Command failed.")
+  local outp = tmpf("root_out")
+  local stp  = tmpf("root_status")
+  local raw  = ""
+  local code = -1
+  reset_tui_state()
+  local wrapped = "su -c "..dq(cmd).." >"..esc(outp).." 2>&1 </dev/null; printf '%s' $? >"..esc(stp)
+  os.execute("sh -c "..esc(wrapped).." >/dev/null 2>&1")
+  local oh = io.open(outp,"rb")
+  if oh then raw = oh:read("*a") or "" oh:close() end
+  local sh = io.open(stp,"rb")
+  if sh then code = tonumber(trim(sh:read("*a") or "")) or -1 sh:close() end
+  os.remove(outp)
+  os.remove(stp)
+  raw = clean_proc_text(raw)
+  reset_tui_state()
+  if code == 0 or raw:lower():find("success",1,true) then return true,"Success" end
+  return false,(raw~="" and raw or "Command failed.")
 end
 
 local function install_apk(path)
