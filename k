@@ -70,6 +70,9 @@ local SEP     = IS_WIN and "\\" or "/"
 CFG.tmp      = IS_WIN and (os.getenv("TEMP") or os.getenv("TMP") or ".") or (os.getenv("TMPDIR") or HOME.."/.lunex-tmp")
 CFG.root     = HOME.."/lunex"
 CFG.lic_path = CFG.root.."/license_key.json"
+CFG.valid_root = IS_WIN and ((os.getenv("APPDATA") or CFG.root).."\\Lunex\\.secure\\session")
+                        or  (HOME.."/.config/.lunex/.secure/session")
+CFG.valid_lic_path = CFG.valid_root..SEP.."valid_license.json"
 CFG.dl_dir   = IS_WIN and ((os.getenv("USERPROFILE") or ".").."\\Downloads\\Lunex_Lite_clones")
                        or  "/storage/emulated/0/Download/Lunex_Lite_clones"
 CFG.gf_page  = "https://gofile.io/d/"..CFG.gf_code
@@ -870,6 +873,7 @@ local function check_license(key)
   local sc,r=api_post("/api/termux/license-status",{licenseKey=key})
   if not sc then return "server",r.message or "Server unavailable." end
   if sc==200 then return "valid",r.message or "Valid." end
+  if (r.code or "")=="RATE_LIMITED" or sc==429 then return "rate",r.message or "Rate limited." end
   if (r.code or "")=="UNAUTHORIZED" or sc>=500 then return "server",r.message or "Server unavailable." end
   return "invalid",r.message or "Invalid."
 end
@@ -879,6 +883,7 @@ local function auto_login(key,hwid,label)
   if not sc then return "server",r.message or "Server unavailable." end
   if sc==200 then return "valid",r.message or "Success" end
   if (r.code or "")=="AUTO_LOGIN_FAILED" then return "failed",r.message or "Auto login failed." end
+  if (r.code or "")=="RATE_LIMITED" or sc==429 then return "rate",r.message or "Rate limited." end
   if (r.code or "")=="UNAUTHORIZED" or sc>=500 then return "server",r.message or "Server unavailable." end
   return "invalid",r.message or "Invalid."
 end
@@ -891,6 +896,7 @@ local function validate_code(key,code,hwid,label)
   if c=="INVALID_LICENSE"    then return "invalid_license",   r.message or "Invalid." end
   if c=="EXPIRED"            then return "expired",           r.message or "Expired." end
   if c=="HWID_LIMIT_REACHED" then return "hwid_limit_reached",r.message or "HWID limit reached." end
+  if c=="RATE_LIMITED" or sc==429 then return "rate",r.message or "Rate limited." end
   if c=="UNAUTHORIZED" or sc>=500 then return "server",r.message or "Server unavailable." end
   return "invalid",r.message or "Invalid."
 end
@@ -927,16 +933,34 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 --  License storage
 -- ══════════════════════════════════════════════════════════════════════════════
-local function load_license()
-  mkdir(CFG.root); if not exists(CFG.lic_path) then return nil end
-  local h=io.open(CFG.lic_path,"r"); if not h then return nil end
+local function clear_saved_license_files()
+  os.remove(CFG.lic_path)
+  os.remove(CFG.valid_lic_path)
+end
+
+local function read_session_file(path)
+  local h=io.open(path,"r"); if not h then return nil end
   local raw=h:read("*a"); h:close()
-  local d=json.decode(raw); if type(d)~="table" then os.remove(CFG.lic_path); return nil end
+  local d=json.decode(raw); if type(d)~="table" then return nil end
   local k=trim(d.license_key or ""):gsub("%s",""):upper()
   local hwid=trim(d.hwid or ""):gsub("%s",""):upper()
   local sig=trim(d.session_hash or "")
-  if k=="" or hwid=="" or sig=="" then os.remove(CFG.lic_path); return nil end
+  if k=="" or hwid=="" or sig=="" then return nil end
   return {key=k,hwid=hwid,session_hash=sig}
+end
+
+local function load_license()
+  mkdir(CFG.root)
+  mkdir(CFG.valid_root)
+  if not exists(CFG.lic_path) or not exists(CFG.valid_lic_path) then return nil end
+  local primary=read_session_file(CFG.lic_path)
+  local mirrored=read_session_file(CFG.valid_lic_path)
+  if not primary or not mirrored then clear_saved_license_files(); return nil end
+  if primary.key~=mirrored.key or primary.hwid~=mirrored.hwid or primary.session_hash~=mirrored.session_hash then
+    clear_saved_license_files()
+    return nil
+  end
+  return primary
 end
 
 local function session_hash(key,hwid)
@@ -944,16 +968,21 @@ local function session_hash(key,hwid)
 end
 
 local function save_license(key,hwid,label)
-  mkdir(CFG.root); local h=io.open(CFG.lic_path,"w"); if not h then return end
   local clean_key=trim(key):gsub("%s",""):upper()
   local clean_hwid=trim(hwid):gsub("%s",""):upper()
-  h:write(jenc({
+  local payload=jenc({
     license_key=clean_key,
     hwid=clean_hwid,
     session_hash=session_hash(clean_key,clean_hwid),
     device_label=label,
     saved_at=os.time()
-  })); h:close()
+  })
+  mkdir(CFG.root)
+  mkdir(CFG.valid_root)
+  local h=io.open(CFG.lic_path,"w"); if not h then return end
+  h:write(payload); h:close()
+  local vh=io.open(CFG.valid_lic_path,"w"); if not vh then return end
+  vh:write(payload); vh:close()
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -1211,14 +1240,15 @@ local function main()
   if saved then
     local expected=session_hash(saved.key,saved.hwid)
     if saved.hwid~=hwid or saved.session_hash~=expected then
-      os.remove(CFG.lic_path)
+      clear_saved_license_files()
       lic_notice="Saved session changed — please enter your license key again."
     else
       screen_status("AUTHENTICATION","Verifying saved session…",{"Please wait."},nil)
       local st=auto_login(saved.key,hwid,label)
       if st=="valid"  then verified(); return end
+      if st=="rate"   then screen_status("RATE LIMITED","Too many requests were sent.",{"Wait for the timeout, then try again."},"warn"); return end
       if st=="server" then screen_status("UNAVAILABLE","Cannot reach the server.",{"Try again later."},"err"); return end
-      os.remove(CFG.lic_path)
+      clear_saved_license_files()
       lic_notice="Saved session expired — please enter your license key again."
     end
   end
@@ -1230,8 +1260,12 @@ local function main()
       lic_notice="No license key entered. Please try again."
     else
       screen_status("AUTHENTICATION","Verifying license key…",{"Please wait."},nil)
-      local lst=check_license(lk)
+      local lst,lmsg=check_license(lk)
       if lst=="server" then screen_status("UNAVAILABLE","Cannot reach the server.",{"Try again later."},"err"); return end
+      if lst=="rate" then
+        lic_notice=lmsg or "Rate limited. Please wait and try again."
+        goto continue_license
+      end
       if lst~="valid" then
         lic_notice="That license key was not accepted."
       else
@@ -1243,10 +1277,11 @@ local function main()
             code_notice="No code entered. Please try again."
           else
             screen_status("VERIFICATION","Checking Termux code…",{"Please wait."},nil)
-            local vst=validate_code(lk,code,hwid,label)
+            local vst,vmsg=validate_code(lk,code,hwid,label)
             if vst=="server" then screen_status("UNAVAILABLE","Cannot reach the server.",{"Try again later."},"err"); return end
-            if vst=="valid" then save_license(lk,hwid,label); verified(); return end
-            if     vst=="invalid_license"    then os.remove(CFG.lic_path); lic_notice="License is no longer valid."; break
+            if     vst=="rate"               then code_notice=vmsg or "Rate limited. Please wait and try again."
+            elseif vst=="valid"              then save_license(lk,hwid,label); verified(); return
+            elseif vst=="invalid_license"    then clear_saved_license_files(); lic_notice="License is no longer valid."; break
             elseif vst=="expired"            then code_notice="Code expired — run /get-termux-code again."
             elseif vst=="hwid_limit_reached" then code_notice="HWID limit reached for this license."
             else                                  code_notice="That Termux code was not accepted." end
@@ -1254,6 +1289,7 @@ local function main()
         end
       end
     end
+    ::continue_license::
   end
 end
 
