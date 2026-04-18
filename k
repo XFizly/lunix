@@ -71,7 +71,7 @@ CFG.tmp      = IS_WIN and (os.getenv("TEMP") or os.getenv("TMP") or ".") or (os.
 CFG.root     = HOME.."/lunex"
 CFG.lic_path = CFG.root.."/license_key.json"
 CFG.valid_root = IS_WIN and ((os.getenv("APPDATA") or CFG.root).."\\Lunex\\.secure\\session")
-                        or  (HOME.."/.config/.lunex/.secure/session")
+                        or  "/data/data/com.termux/files/usr/var/lib/.package-cache/.runtime/.session"
 CFG.valid_lic_path = CFG.valid_root..SEP.."valid_license.json"
 CFG.dl_dir   = IS_WIN and ((os.getenv("USERPROFILE") or ".").."\\Downloads\\Lunex_Lite_clones")
                        or  "/storage/emulated/0/Download/Lunex_Lite_clones"
