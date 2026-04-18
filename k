@@ -896,6 +896,7 @@ local function validate_code(key,code,hwid,label)
   if c=="INVALID_LICENSE"    then return "invalid_license",   r.message or "Invalid." end
   if c=="EXPIRED"            then return "expired",           r.message or "Expired." end
   if c=="HWID_LIMIT_REACHED" then return "hwid_limit_reached",r.message or "HWID limit reached." end
+  if c=="INVALID_HWID"       then return "invalid_hwid",      r.message or "Invalid HWID." end
   if c=="RATE_LIMITED" or sc==429 then return "rate",r.message or "Rate limited." end
   if c=="UNAUTHORIZED" or sc>=500 then return "server",r.message or "Server unavailable." end
   return "invalid",r.message or "Invalid."
@@ -1284,6 +1285,7 @@ local function main()
             elseif vst=="invalid_license"    then clear_saved_license_files(); lic_notice="License is no longer valid."; break
             elseif vst=="expired"            then code_notice="Code expired — run /get-termux-code again."
             elseif vst=="hwid_limit_reached" then code_notice="HWID limit reached for this license."
+            elseif vst=="invalid_hwid"       then code_notice=vmsg or "Invalid HWID for this device."
             else                                  code_notice="That Termux code was not accepted." end
           end
         end
