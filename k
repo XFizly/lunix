@@ -408,7 +408,7 @@ local function header(step)
   end
   io.write("\n")
   local tag=paint("▸ ",C.blo)
-    ..paint("S E C U R E   ·   V E R I F I E D   ·   A U T H E N T I C A T E D",C.coal)
+    ..paint("L U N E X   ·   L I T E   ·   C L O N E S",C.coal)
     ..paint(" ◂",C.blo)
   io.write(centercol(tag,w).."\n\n")
   io.write(centercol(paint(string.rep("─",math.min(w-8,66)),C.blo),w).."\n")
@@ -470,26 +470,21 @@ local function item_button_lines(label, meta, active, selected)
   }
 end
 
-local function result_card_lines(entry, compact)
+local function result_list_lines(entry, idx, inner, show_detail)
   local kind   = entry.kind or "err"
-  local bcol   = ({ ok=C.bok, dl=C.bmid, warn=C.bwrn, err=C.berr })[kind] or C.bmid
   local scol   = ({ ok=C.ok,  dl=C.teal, warn=C.warn, err=C.err  })[kind] or C.silver
   local sym    = ({ ok=SYM.ok, dl=SYM.dl, warn=SYM.warn, err=SYM.err })[kind] or SYM.info
-  local inner  = box_inner()
-  local btnw   = math.max(20, inner - 2)
-  local badge  = paint(trunc(entry.status or "", 18), BL, scol)
-  local name_w = math.max(10, btnw - 10)
-  local name   = paint(trunc(entry.name or "", name_w), C.white)
-  local detail = paint(trunc(entry.detail or "", btnw - 4), C.slate)
-  local top    = " " .. paint("┌"..string.rep("─", btnw - 2).."┐", bcol)
-  local line1  = " " .. paint("│", bcol) .. " " .. padcol(sym .. badge, btnw - 4) .. " " .. paint("│", bcol)
-  local line2  = " " .. paint("│", bcol) .. " " .. padcol(name, btnw - 4) .. " " .. paint("│", bcol)
-  local bottom = " " .. paint("└"..string.rep("─", btnw - 2).."┘", bcol)
-  if compact or not entry.detail or entry.detail == "" then
-    return { top, line1, line2, bottom }
+  local rows   = {}
+  rows[#rows + 1] = row(sym,{
+    paint("Clone "..tostring(idx)..": ", C.ash),
+    paint(trunc(entry.status or "", 24), BL, scol),
+  })
+  rows[#rows + 1] = "  " .. paint(trunc(entry.name or "", inner - 4), C.white)
+  if show_detail and entry.detail and entry.detail ~= "" and entry.status ~= "Downloaded" then
+    rows[#rows + 1] = "  " .. paint(trunc(entry.detail, inner - 4), C.slate)
   end
-  local line3  = " " .. paint("│", bcol) .. " " .. padcol(detail, btnw - 4) .. " " .. paint("│", bcol)
-  return { top, line1, line2, line3, bottom }
+  rows[#rows + 1] = ""
+  return rows
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -614,9 +609,8 @@ local function screen_progress(idx, total, current, log)
     local rows = {}
     if start>1 then rows[#rows+1]=paint("  ↑  "..tostring(start-1).." earlier items …",C.slate) end
     for i=start,#log do
-      local block = result_card_lines(log[i], true)
+      local block = result_list_lines(log[i], i, inner, false)
       for _, ln in ipairs(block) do rows[#rows+1]=ln end
-      if i < #log then rows[#rows+1]="" end
     end
     draw_box(" Recent Results ("..#log.."/"..total..") ", rows, C.blo,"R")
     io.write("\n")
@@ -636,7 +630,7 @@ local function screen_summary(results)
   end
 
   local scroll=1
-  local vis   = math.max(1, math.min(3, math.max(1, math.floor((term_rows() - 30) / 5))))
+  local vis   = math.max(1, math.min(4, math.max(1, math.floor((term_rows() - 28) / 4))))
 
   while true do
     header("SUMMARY")
@@ -664,22 +658,13 @@ local function screen_summary(results)
 
     for i=scroll,last do
       local r   = results[i]
-      local col = r.status=="Installed" and C.ok
-                  or r.status=="Downloaded"     and C.teal
-                  or r.status=="Rate limited"   and C.warn
-                  or C.err
-      local sym = r.status=="Installed" and SYM.ok
-                  or r.status=="Downloaded"     and SYM.dl
-                  or r.status=="Rate limited"   and SYM.warn
-                  or SYM.err
-      local block = result_card_lines({
+      local block = result_list_lines({
         name = r.name,
         status = r.status,
         detail = r.detail,
         kind = r.kind or (r.status=="Installed" and "ok" or r.status=="Downloaded" and "dl" or r.status=="Rate limited" and "warn" or "err"),
-      }, false)
+      }, i, inner, true)
       for _, ln in ipairs(block) do rows[#rows+1]=ln end
-      if i < last then rows[#rows+1]="" end
     end
 
     if last<#results then
