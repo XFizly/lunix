@@ -395,6 +395,21 @@ local SYM = {
 
 local function row(sym, parts) return sym..table.concat(parts) end
 
+local function button_lines(label, active, muted, icon)
+  local inner = box_inner()
+  local btnw  = math.max(20, inner - 2)
+  local bcol  = muted and C.blo or (active and C.bhi or C.bmid)
+  local lcol  = muted and C.slate or (active and C.white or C.silver)
+  local mark  = icon and (icon .. "  ") or ""
+  local text  = trunc(mark .. tostring(label or ""), btnw - 4)
+  local body  = centercol(paint(text, active and BL or "", lcol), btnw - 4)
+  return {
+    " " .. paint("┌"..string.rep("─", btnw - 2).."┐", bcol),
+    " " .. paint("│", bcol) .. " " .. padcol(body, btnw - 4) .. " " .. paint("│", bcol),
+    " " .. paint("└"..string.rep("─", btnw - 2).."┘", bcol),
+  }
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 --  Screen helpers
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -618,19 +633,20 @@ end
 local function screen_menu(cursor,notice)
   header("MAIN MENU")
   local opts={
-    {SYM.dl,  "Download & Install / Update Clones"},
-    {SYM.wait,"Auto Clones Position  (SOON)"},
+    {"Download & Install / Update Clones","[1]"},
+    {"Auto Clones Position  (SOON)","[2]"},
   }
   local rows={"",paint("Choose what you want to do next.",C.silver),""}
   if notice and notice~="" then
     rows[#rows+1]=row(SYM.warn,{paint(notice,C.warn)}); rows[#rows+1]=""
   end
   for i,opt in ipairs(opts) do
-    local active=cursor==i
-    local pfx=active and paint(" ▶ ",BL,C.cyan) or paint("   ",C.slate)
-    rows[#rows+1]=pfx..opt[1]..paint(opt[2], active and BL or "", active and C.white or C.ash)
+    local block = button_lines(opt[1], cursor==i, i==2, opt[2])
+    rows[#rows+1]=block[1]
+    rows[#rows+1]=block[2]
+    rows[#rows+1]=block[3]
+    rows[#rows+1]=""
   end
-  rows[#rows+1]=""
   rows[#rows+1]=paint("  ↑ ↓  Navigate    Enter  Select    q  Exit",C.slate)
   draw_box(" Lunex Menu ",rows,C.bmid,"D")
   io.write("\n")
@@ -658,27 +674,37 @@ local function screen_catalog(items,selected,cursor,scroll,notice)
 
   local vis =CFG.cat_visible
   local last=math.min(#items,scroll+vis-1)
-  local nw  = inner-16  -- name column: inner minus cursor(3)+checkbox(4)+gap(2)+size(7)
+  local name_w = math.max(12, inner - 18)
 
   if scroll>1 then rows[#rows+1]=paint("  ↑  "..tostring(scroll-1).." items above",C.slate) end
 
   for i=scroll,last do
-    local item  =items[i]; local active=cursor==i
-    local mark  =selected[i] and paint("[✔]",BL,C.ok) or paint("[ ]",C.slate)
-    local pfx   =active and paint(" ▶ ",BL,C.cyan) or paint("   ",C.slate)
-    local nm    =paint(trunc(item.name,nw), active and C.white or C.silver)
-    local sz    =paint(string.format("%-7s",fmt_size(item.size)), active and C.cyan or C.slate)
-    rows[#rows+1]=pfx..mark.." "..nm.."  "..sz
+    local item   = items[i]
+    local active = cursor==i
+    local mark   = selected[i] and paint("[x]",BL,C.ok) or paint("[ ]",C.slate)
+    local pfx    = active and paint(" > ",BL,C.cyan) or paint("   ",C.slate)
+    local nm     = paint(padcol(trunc(item.name,name_w),name_w), active and C.white or C.silver)
+    local sz     = paint(padcol(fmt_size(item.size),8), active and C.cyan or C.slate)
+    rows[#rows+1]=pfx..mark.." "..nm.." "..sz
   end
 
   if last<#items then rows[#rows+1]=paint("  ↓  "..(#items-last).." more below",C.slate) end
 
   local base=#items
   rows[#rows+1]=""
-  rows[#rows+1]=(cursor==base+1 and paint(" ▶ ",BL,C.cyan) or paint("   ",C.slate))
-    ..SYM.dl..paint("[ Start Download & Install ]", cursor==base+1 and BL or "", cursor==base+1 and C.white or C.ash)
-  rows[#rows+1]=(cursor==base+2 and paint(" ▶ ",BL,C.cyan) or paint("   ",C.slate))
-    ..SYM.info..paint("[ Go Back ]", cursor==base+2 and BL or "", cursor==base+2 and C.white or C.slate)
+  do
+    local block = button_lines("Start Download & Install", cursor==base+1, false, "[>]")
+    rows[#rows+1]=block[1]
+    rows[#rows+1]=block[2]
+    rows[#rows+1]=block[3]
+  end
+  rows[#rows+1]=""
+  do
+    local block = button_lines("Go Back", cursor==base+2, false, "[<]")
+    rows[#rows+1]=block[1]
+    rows[#rows+1]=block[2]
+    rows[#rows+1]=block[3]
+  end
   rows[#rows+1]=""
   rows[#rows+1]=paint("  Enter/Space  toggle    A  all    q  back",C.slate)
   draw_box(" Clones Catalog ("..#items..") ",rows,C.bmid,"D")
