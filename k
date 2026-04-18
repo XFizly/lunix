@@ -470,6 +470,28 @@ local function item_button_lines(label, meta, active, selected)
   }
 end
 
+local function result_card_lines(entry, compact)
+  local kind   = entry.kind or "err"
+  local bcol   = ({ ok=C.bok, dl=C.bmid, warn=C.bwrn, err=C.berr })[kind] or C.bmid
+  local scol   = ({ ok=C.ok,  dl=C.teal, warn=C.warn, err=C.err  })[kind] or C.silver
+  local sym    = ({ ok=SYM.ok, dl=SYM.dl, warn=SYM.warn, err=SYM.err })[kind] or SYM.info
+  local inner  = box_inner()
+  local btnw   = math.max(20, inner - 2)
+  local badge  = paint(trunc(entry.status or "", 18), BL, scol)
+  local name_w = math.max(10, btnw - 10)
+  local name   = paint(trunc(entry.name or "", name_w), C.white)
+  local detail = paint(trunc(entry.detail or "", btnw - 4), C.slate)
+  local top    = " " .. paint("┌"..string.rep("─", btnw - 2).."┐", bcol)
+  local line1  = " " .. paint("│", bcol) .. " " .. padcol(sym .. badge, btnw - 4) .. " " .. paint("│", bcol)
+  local line2  = " " .. paint("│", bcol) .. " " .. padcol(name, btnw - 4) .. " " .. paint("│", bcol)
+  local bottom = " " .. paint("└"..string.rep("─", btnw - 2).."┘", bcol)
+  if compact or not entry.detail or entry.detail == "" then
+    return { top, line1, line2, bottom }
+  end
+  local line3  = " " .. paint("│", bcol) .. " " .. padcol(detail, btnw - 4) .. " " .. paint("│", bcol)
+  return { top, line1, line2, line3, bottom }
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 --  Screen helpers
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -568,41 +590,35 @@ local function screen_progress(idx, total, current, log)
   local inner  = box_inner()
   header("CLONE TASK")
 
-  -- Current item panel
   local phase  = current and current.phase or "Working…"
   local pct    = current and current.pct   or 0
-  local curname= current and trunc(current.name, inner-4) or ""
+  local curname= current and trunc(current.name, inner-8) or ""
+  local phase_line = row(SYM.inst,{
+    paint(phase,BL,C.white),
+    paint("  "..idx.."/"..total,C.slate),
+  })
 
   draw_box(" Progress ", {
     "",
-    row(SYM.info,{
-      paint(phase,BL,C.white),
-      paint("  ("..idx.."/"..total..")",C.slate),
-    }),
-    "  "..curname,
+    phase_line,
+    "  "..paint(curname,C.silver),
     "  "..progress_bar(pct, math.min(inner-6,40)),
     "",
   }, C.bmid,"D")
 
   io.write("\n")
 
-  -- Completed log (scrolled to bottom, last N items)
   if log and #log>0 then
-    local vis  = CFG.sum_visible
+    local vis  = math.max(2, math.min(4, CFG.sum_visible))
     local start= math.max(1,#log-vis+1)
     local rows = {}
     if start>1 then rows[#rows+1]=paint("  ↑  "..tostring(start-1).." earlier items …",C.slate) end
     for i=start,#log do
-      local e  = log[i]
-      local col= ({ok=C.ok,err=C.err,warn=C.warn,dl=C.teal})[e.kind] or C.silver
-      local sym= ({ok=SYM.ok,err=SYM.err,warn=SYM.warn,dl=SYM.dl,inst=SYM.inst})[e.kind] or SYM.info
-      local nw = math.max(10, inner-4-cw(strip_ansi(e.status or "")))
-      rows[#rows+1]=row(sym,{
-        paint(trunc(e.name,nw),col),
-        paint("  "..(e.status or ""),C.slate),
-      })
+      local block = result_card_lines(log[i], true)
+      for _, ln in ipairs(block) do rows[#rows+1]=ln end
+      if i < #log then rows[#rows+1]="" end
     end
-    draw_box(" Completed ("..#log.."/"..total..") ", rows, C.blo,"R")
+    draw_box(" Recent Results ("..#log.."/"..total..") ", rows, C.blo,"R")
     io.write("\n")
   end
 end
@@ -614,13 +630,13 @@ local function screen_summary(results)
   mouse_disable()
   local n_ok,n_dl,n_fail=0,0,0
   for _,r in ipairs(results) do
-    if r.status=="Installed/Updated" then n_ok=n_ok+1
+    if r.status=="Installed" then n_ok=n_ok+1
     elseif r.status=="Downloaded"    then n_dl=n_dl+1
     else                                  n_fail=n_fail+1 end
   end
 
   local scroll=1
-  local inner =box_inner()
+  local vis   = math.max(1, math.min(3, math.max(1, math.floor((term_rows() - 30) / 5))))
 
   while true do
     header("SUMMARY")
@@ -628,7 +644,7 @@ local function screen_summary(results)
     -- Stats strip
     draw_box(" Results ",{
       "",
-      row(SYM.ok,  {paint(tostring(n_ok),  BL,C.ok),  paint(" Installed / Updated",C.silver)}),
+      row(SYM.ok,  {paint(tostring(n_ok),  BL,C.ok),  paint(" Installed",C.silver)}),
       row(SYM.dl,  {paint(tostring(n_dl),  BL,C.teal),paint(" Downloaded only",    C.silver)}),
       row(SYM.err, {paint(tostring(n_fail),BL,C.err), paint(" Failed",             C.silver)}),
       "",
@@ -639,8 +655,6 @@ local function screen_summary(results)
 
     io.write("\n")
 
-    -- Scrollable item list
-    local vis  = CFG.sum_visible
     local last = math.min(#results, scroll+vis-1)
     local rows = {}
 
@@ -650,22 +664,22 @@ local function screen_summary(results)
 
     for i=scroll,last do
       local r   = results[i]
-      local col = r.status=="Installed/Updated" and C.ok
+      local col = r.status=="Installed" and C.ok
                   or r.status=="Downloaded"     and C.teal
                   or r.status=="Rate limited"   and C.warn
                   or C.err
-      local sym = r.status=="Installed/Updated" and SYM.ok
+      local sym = r.status=="Installed" and SYM.ok
                   or r.status=="Downloaded"     and SYM.dl
                   or r.status=="Rate limited"   and SYM.warn
                   or SYM.err
-      local nw  = math.max(10, inner-26)
-      rows[#rows+1]=row(sym,{
-        paint(trunc(r.name,nw),col),
-        paint("  "..trunc(r.status,18),C.slate),
-      })
-      if r.detail and r.detail~="" then
-        rows[#rows+1]="    "..paint(trunc(r.detail,inner-5),C.slate)
-      end
+      local block = result_card_lines({
+        name = r.name,
+        status = r.status,
+        detail = r.detail,
+        kind = r.kind or (r.status=="Installed" and "ok" or r.status=="Downloaded" and "dl" or r.status=="Rate limited" and "warn" or "err"),
+      }, false)
+      for _, ln in ipairs(block) do rows[#rows+1]=ln end
+      if i < last then rows[#rows+1]="" end
     end
 
     if last<#results then
@@ -1014,8 +1028,8 @@ local function process_clones(session,items,selected)
         screen_progress(i,total,{name=item.name,phase="Installing / Updating",pct=75},log)
         local ok,out=install_apk(path); os.remove(path)
         if ok then
-          log[#log+1]={name=item.name,status="Installed/Updated",detail=out,kind="ok"}
-          screen_progress(i,total,{name=item.name,phase="Installed / Updated",pct=100},log)
+          log[#log+1]={name=item.name,status="Installed",detail=out,kind="ok"}
+          screen_progress(i,total,{name=item.name,phase="Installed",pct=100},log)
         else
           log[#log+1]={name=item.name,status="Failed",detail=out,kind="err"}
           screen_progress(i,total,{name=item.name,phase="Install failed",pct=0},log)
